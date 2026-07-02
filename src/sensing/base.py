@@ -5,4 +5,5 @@ class Sensor(ABC):
     def read(self) -> dict:
         # helps return normalised readings and cap readings to useable / acceptable range 
         readings = {"loudness": 0.4, 
-                    "motion": 0.2}
+                    "motion": 0.2, 
+                    "acceleration": 0.1}
