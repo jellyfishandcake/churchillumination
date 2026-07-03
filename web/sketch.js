@@ -16,31 +16,45 @@ const sketch = (p) => {
   const W = 1200;
   const H = 100;
   let sketchCanvas;
- 
+
+  // What's actually drawn each frame — eased toward the latest value from
+  // Python each frame rather than snapping to it the instant a WebSocket
+  // message arrives (~20/sec), since draw() itself runs at ~60fps. Without
+  // this, every update looks like a hard cut. EASE only makes sense here
+  // because hue's mapped range (state_to_visual: 200 down to 0) never
+  // wraps past 360 — a hue formula that did wrap would need circular
+  // interpolation instead of a plain lerp.
+  let displayHue = 200;
+  let displayBrightness = 0.2;
+  const EASE = 0.08; // lower = smoother/slower, higher = snappier
+
   p.setup = () => {
     sketchCanvas = p.createCanvas(W, H);
     sketchCanvas.parent("sketch-container");
     p.colorMode(p.HSB, 360, 100, 100);
     p.noStroke();
   };
- 
+
   p.draw = () => {
     // Read live sensor + state values (fresh every frame)
     const noise = window.sensors?.noise?.level ?? 0;
-    const hue = window.appState?.hue ?? 200;
-    const brightness = window.appState?.brightness ?? 0.5;
- 
+    const targetHue = window.appState?.hue ?? 200;
+    const targetBrightness = window.appState?.brightness ?? 0.5;
+
+    displayHue = p.lerp(displayHue, targetHue, EASE);
+    displayBrightness = p.lerp(displayBrightness, targetBrightness, EASE);
+
     // Perlin noise flow — the "living wall" idiom from MIT.
     // The KEY move: noise level modulates the animation speed.
     // Quiet room → slow flow. Busy room → agitated.
     const speed = 0.002 + noise * 0.02;
     const scale = 0.008;
- 
+
     for (let x = 0; x < W; x += 4) {
       const n = p.noise(x * scale, p.frameCount * speed);
-      const localHue = (hue + n * 60) % 360;
+      const localHue = (displayHue + n * 60) % 360;
       const sat = 60 + noise * 40;
-      const bri = 100 * brightness * (0.5 + 0.5 * n);
+      const bri = 100 * displayBrightness * (0.5 + 0.5 * n);
       p.fill(localHue, sat, bri);
       p.rect(x, 0, 4, H);
     }

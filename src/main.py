@@ -56,20 +56,46 @@ def build_sensors(config: dict) -> list:
     return sensors
 
 
+# Exponential moving average factor for smoothing raw sensor readings before
+# they reach infer_state. Lower = calmer/slower to react to a single spike,
+# higher = snappier. Without this, one loud cough or a webcam auto-exposure
+# blip swings activity_level (and the mood label) instantly, since nothing
+# else in rules.py/visuals.py remembers what a reading was a moment ago.
+SMOOTHING_ALPHA = 0.15
+
+
+def _smooth_readings(previous: dict, current: dict, alpha: float) -> dict:
+    """EMA-smooth each numeric reading against its previous value. Non-numeric
+    values (e.g. `pulse_detected`, the nested `nodes` dict) and any key seen
+    for the first time pass through unsmoothed."""
+    smoothed = dict(previous)
+    for key, value in current.items():
+        is_numeric = isinstance(value, (int, float)) and not isinstance(value, bool)
+        previous_value = previous.get(key)
+        if is_numeric and isinstance(previous_value, (int, float)):
+            smoothed[key] = previous_value + alpha * (value - previous_value)
+        else:
+            smoothed[key] = value
+    return smoothed
+
+
 async def sensor_loop(sensors, infer):
-    """Read sensors, compute state, publish to shared dict. 20 Hz."""
+    """Read sensors, smooth them, compute state, publish to shared dict. 20 Hz."""
+    smoothed = {}
     while True:
-        readings = {}
+        raw = {}
         for s in sensors:
-            readings.update(s.read())
- 
-        state = infer(readings)
+            raw.update(s.read())
+
+        smoothed = _smooth_readings(smoothed, raw, SMOOTHING_ALPHA)
+
+        state = infer(smoothed)
         visual = state_to_visual(state)
- 
+
         # Update the shared dict the server reads from
         server.latest["state"] = state.to_dict()
         server.latest["visual"] = visual
- 
+
         await asyncio.sleep(0.05)  # 20 Hz
  
  
