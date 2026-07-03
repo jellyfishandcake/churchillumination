@@ -1,1 +1,45 @@
+# Copy this file to config.yaml and adjust for your machine (laptop dev vs
+# the Raspberry Pi). config.yaml is gitignored since it holds machine-
+# specific settings (GPIO pin numbers, MQTT broker address, etc). Any key
+# you omit falls back to the default in src/config.py.
 
+server:
+  host: localhost
+  port: 8000
+
+leds:
+  num_pixels: 60
+
+sensors:
+  audio:
+    enabled: true
+
+  motion:
+    enabled: true
+
+  # Raspberry Pi Sense HAT v2 — accelerometer/gyro/magnetometer +
+  # temperature/humidity/pressure. Falls back to a mock if the sense_hat
+  # library or the board isn't present (e.g. on a dev laptop).
+  sense_hat:
+    enabled: true
+
+  # Mini PIR motion sensor on GPIO. Falls back to a mock off the Pi.
+  pir:
+    enabled: true
+    gpio_pin: 4
+
+  # MAX30102 heart-rate/SpO2 sensor over I2C. Falls back to a mock off the Pi.
+  heart_rate:
+    enabled: true
+
+  # Seeed XIAO ESP32S3 Sense nodes, publishing readings over MQTT.
+  # Falls back to mock readings per node if the broker is unreachable or a
+  # node hasn't published yet.
+  nodes:
+    enabled: true
+    mqtt_host: localhost
+    mqtt_port: 1883
+    node_ids:
+      - node1
+      - node2
+      - node3

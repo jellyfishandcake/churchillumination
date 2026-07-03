@@ -1,2 +1,8 @@
 sounddevice
 opencv-python
+websockets
+numpy
+scipy
+mediapipe
+PyYAML
+paho-mqtt

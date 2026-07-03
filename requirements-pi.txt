@@ -1,0 +1,20 @@
+# Install requirements.txt FIRST, then this file — on the Raspberry Pi only.
+# These are Linux/Pi-specific (I2C, GPIO, camera stack) and will fail to
+# build on Windows/macOS dev machines. Every sensor module that uses one of
+# these falls back to a mock automatically if it isn't installed, so the
+# main pipeline runs fine on a dev laptop without any of this.
+
+sense-hat   # Sense HAT v2 — may also need `sudo apt install sense-hat`
+            # (its RTIMULib dependency isn't always reliable via pip alone)
+gpiozero    # mini PIR sensor
+lgpio       # gpiozero pin-factory backend required on Raspberry Pi 5 —
+            # RPi.GPIO (gpiozero's default) does not support the Pi 5's
+            # GPIO chip
+smbus2      # I2C bus access, used by the hand-rolled MAX30102 driver
+            # (src/sensing/heart_rate.py) — no dedicated pip package exists
+            # for the MAX30102
+
+# picamera2 is intentionally NOT listed here: Raspberry Pi's own docs say
+# pip install is unreliable/discouraged. Install via:
+#   sudo apt install -y python3-picamera2
+# src/sensing/motion.py treats it as a best-effort optional import.

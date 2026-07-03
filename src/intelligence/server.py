@@ -76,7 +76,7 @@ async def recv_loop(websocket):
 # hook. We use it to serve the /web folder so opening localhost:8000 shows
 # the dashboard without needing a separate web server.
  
-WEB_DIR = pathlib.Path(__file__).parent.parent / "web"
+WEB_DIR = pathlib.Path(__file__).parent.parent.parent / "web"
  
 MIME_TYPES = {
     ".html": "text/html",
