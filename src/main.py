@@ -80,12 +80,24 @@ def _smooth_readings(previous: dict, current: dict, alpha: float) -> dict:
 
 
 async def sensor_loop(sensors, infer):
-    """Read sensors, smooth them, compute state, publish to shared dict. 20 Hz."""
+    """Read sensors, smooth them, compute state, publish to shared dict. 20 Hz.
+
+    Each sensor now handles its own hardware failures internally — it falls
+    back to its own mock reading and records .healthy/.last_error on itself
+    (see base.py's _mark_failed/_mark_ok). So the try/except below is just a
+    last-resort safety net for a bug even inside that fallback path, not the
+    primary way failures get handled: without it, one such bug would still
+    crash the whole asyncio.gather() in main(), taking the LED loop and the
+    WebSocket server down along with the sensor that actually failed.
+    """
     smoothed = {}
     while True:
         raw = {}
         for s in sensors:
-            raw.update(s.read())
+            try:
+                raw.update(s.read())
+            except Exception as exc:
+                print(f"[sensor_loop] {type(s).__name__}.read() raised even past its own fallback — skipping this tick: {exc}")
 
         smoothed = _smooth_readings(smoothed, raw, SMOOTHING_ALPHA)
 
@@ -95,6 +107,12 @@ async def sensor_loop(sensors, infer):
         # Update the shared dict the server reads from
         server.latest["state"] = state.to_dict()
         server.latest["visual"] = visual
+        # Per-sensor health, so a future error/status display can show which
+        # sensors are currently running on their mock due to a real failure
+        # (as opposed to simply not having that hardware configured at all).
+        server.latest["sensor_health"] = {
+            type(s).__name__: {"healthy": s.healthy, "last_error": s.last_error} for s in sensors
+        }
 
         await asyncio.sleep(0.05)  # 20 Hz
  

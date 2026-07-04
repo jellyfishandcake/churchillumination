@@ -32,6 +32,7 @@ MODE_HR_ONLY = 0x02
 
 class HeartRateSensor(Sensor):
     def __init__(self, i2c_bus: int = 1):
+        super().__init__()
         self._bus = None
         self._mock_bpm = 70.0
 

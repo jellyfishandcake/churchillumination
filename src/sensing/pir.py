@@ -24,6 +24,7 @@ except ImportError:
 
 class PIRSensor(Sensor):
     def __init__(self, gpio_pin: int = 4):
+        super().__init__()
         self._pir = None
         if GPIOMotionSensor is not None:
             try:
@@ -34,4 +35,12 @@ class PIRSensor(Sensor):
     def read(self) -> dict:
         if self._pir is None:
             return {"presence": 1.0 if random.random() < 0.05 else 0.0}
-        return {"presence": 1.0 if self._pir.motion_detected else 0.0}
+
+        try:
+            presence = 1.0 if self._pir.motion_detected else 0.0
+        except Exception as exc:
+            self._mark_failed(exc)
+            return {"presence": 1.0 if random.random() < 0.05 else 0.0}
+
+        self._mark_ok()
+        return {"presence": presence}

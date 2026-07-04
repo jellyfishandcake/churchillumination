@@ -32,6 +32,7 @@ STALE_AFTER_SECONDS = 10.0
 
 class NodeSensor(Sensor):
     def __init__(self, node_ids, mqtt_host: str = "localhost", mqtt_port: int = 1883):
+        super().__init__()
         self.node_ids = list(node_ids)
         self._latest_by_node = {}
         self._client = None

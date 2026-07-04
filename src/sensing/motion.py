@@ -19,6 +19,7 @@ class MotionSensor(Sensor):
     cameras attached."""
 
     def __init__(self, sensitivity: float = 8.0):
+        super().__init__()
         self.sensitivity = sensitivity
         self._prev = None
         self._picam = None
@@ -55,16 +56,25 @@ class MotionSensor(Sensor):
         return None
 
     def read(self) -> dict:
-        gray = self._grab_gray_frame()
+        try:
+            gray = self._grab_gray_frame()
+        except Exception as exc:
+            # Camera was working, then a live grab failed (e.g. disconnected
+            # mid-run) — same fallback as "no camera attached at all".
+            self._mark_failed(exc)
+            return {"motion": random.uniform(0.0, 0.05)}
+
         if gray is None:
             return {"motion": random.uniform(0.0, 0.05)}  # no camera attached
 
         if self._prev is None:
             self._prev = gray
+            self._mark_ok()
             return {"motion": 0.0}
 
         diff = np.abs(gray.astype(float) - self._prev.astype(float))  # pixel changes between frames
         self._prev = gray
         motion = min(1.0, (diff.mean() / 255.0) * self.sensitivity)  # scale + clamp to a max of 1
 
+        self._mark_ok()
         return {"motion": motion}

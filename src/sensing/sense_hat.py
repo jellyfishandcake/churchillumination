@@ -21,6 +21,7 @@ except ImportError:
 
 class SenseHatSensor(Sensor):
     def __init__(self):
+        super().__init__()
         self._hat = None
         if SenseHat is not None:
             try:
@@ -32,18 +33,26 @@ class SenseHatSensor(Sensor):
         if self._hat is None:
             return _mock_reading()
 
-        accel = self._hat.get_accelerometer_raw()
-        magnitude = math.sqrt(accel["x"] ** 2 + accel["y"] ** 2 + accel["z"] ** 2)
-        # At rest, one axis reads ~1g from gravity alone — deviation from
-        # that baseline is what we care about as "activity".
-        acceleration = min(1.0, abs(magnitude - 1.0))
+        try:
+            accel = self._hat.get_accelerometer_raw()
+            magnitude = math.sqrt(accel["x"] ** 2 + accel["y"] ** 2 + accel["z"] ** 2)
+            # At rest, one axis reads ~1g from gravity alone — deviation from
+            # that baseline is what we care about as "activity".
+            acceleration = min(1.0, abs(magnitude - 1.0))
+            reading = {
+                "acceleration": acceleration,
+                "temperature": self._hat.get_temperature(),
+                "humidity": self._hat.get_humidity(),
+                "pressure": self._hat.get_pressure(),
+            }
+        except Exception as exc:
+            # Board was working, then a live read failed — same fallback as
+            # "board not attached at all".
+            self._mark_failed(exc)
+            return _mock_reading()
 
-        return {
-            "acceleration": acceleration,
-            "temperature": self._hat.get_temperature(),
-            "humidity": self._hat.get_humidity(),
-            "pressure": self._hat.get_pressure(),
-        }
+        self._mark_ok()
+        return reading
 
 
 def _mock_reading() -> dict:

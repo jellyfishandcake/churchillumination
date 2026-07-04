@@ -24,6 +24,7 @@ from websockets.datastructures import Headers
 latest = {
     "state": {"activity_level": 0.0, "mood": "neutral", "presence_count": 0},
     "visual": {"hue": 200, "brightness": 0.2},
+    "sensor_health": {},
 }
  
 # When the browser sends colours back, we stash them here so main.py can pick up.

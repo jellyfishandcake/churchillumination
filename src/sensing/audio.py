@@ -4,7 +4,8 @@ from .base import Sensor
 
 class AudioSensor(Sensor):
     # here we read laptop mic and turns volume into a number
-    def __init__(self, sensitivity: float = 20.0):
+    def __init__(self, sensitivity: float = 20.0): ## Calibrate sensitivity to get a good range of loudness - between 0 and 1 (max)
+        super().__init__()
         self._loudness = 0.0
         self.sensitivity = sensitivity 
         self._stream = sd.InputStream(
