@@ -68,8 +68,7 @@ SMOOTHING_ALPHA = 0.15
 
 def _smooth_readings(previous: dict, current: dict, alpha: float) -> dict:
     """EMA-smooth each numeric reading against its previous value. Non-numeric
-    values (e.g. `pulse_detected`, the nested `nodes` dict) and any key seen
-    for the first time pass through unsmoothed."""
+    values and any key seen for the first time pass through unsmoothed."""
     smoothed = dict(previous)
     for key, value in current.items():
         is_numeric = isinstance(value, (int, float)) and not isinstance(value, bool)
@@ -101,8 +100,7 @@ async def sensor_loop(sensors, infer, activation_tracker):
             except Exception as exc:
                 print(f"[sensor_loop] {type(s).__name__}.read() raised even past its own fallback — skipping this tick: {exc}")
 
-        # "activated" is derived from raw (not smoothed) presence, since it's
-        # a debounced on/off decision, not a level that benefits from EMA.
+        # "activated" is derived from raw (not smoothed) presence, does not benefit from smoothing
         presence = raw.get("presence", 0.0) > 0.5
         raw["activated"] = activation_tracker.update(presence, time.time())
 

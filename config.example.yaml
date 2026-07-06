@@ -9,6 +9,12 @@ server:
 
 leds:
   num_pixels: 60
+  layout: strip   # strip|grid|ring — only "strip" is implemented so far (see web/pixelMap.js)
+
+# How long (in seconds) the installation stays "activated" after the last
+# presence detection before falling back to idle. See src/intelligence/activation.py.
+activation:
+  timeout_seconds: 300.0
 
 sensors:
   audio:
