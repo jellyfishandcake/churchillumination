@@ -16,6 +16,18 @@ leds:
 activation:
   timeout_seconds: 300.0
 
+# Which system effect + palette (see src/output/effects/) is live on start.
+# Both are changeable at runtime from the terminal's effect picker.
+effects:
+  default_effect: organic_wave   # organic_wave | organic_comet | organic_twinkle
+  default_palette: winter        # any key in colour_palette.PALETTES / palettes.json
+
+# Shared passcode gating admin-only terminal controls. CHANGE THIS — sent in
+# plaintext over the local websocket, a low-security gate for a private LAN
+# only, not a real security boundary.
+admin:
+  passcode: changeme
+
 sensors:
   audio:
     enabled: true

@@ -81,7 +81,13 @@ class OrganicWaveEffect:
         self.highlight = highlight
         self.t = 0.0
 
-    def step(self):
+    def step(self, intensity: float = 1.0):
+        """intensity is the current activity_level (0..1) - quiet rooms get
+        a slower, dimmer flow; lively rooms get a faster, brighter one."""
+        intensity = min(max(intensity, 0.0), 1.0)
+        speed_scale = 0.3 + 0.9 * intensity
+        brightness_scale = 0.4 + 0.8 * intensity
+
         x = np.arange(self.n)
         layer1 = value_noise(x * self.scale, np.full(self.n, self.t), seed=self.seed)
         layer2 = value_noise(x * self.scale * 2.3 + 50, np.full(self.n, self.t * 1.7), seed=self.seed + 1)
@@ -92,7 +98,8 @@ class OrganicWaveEffect:
         if self.highlight:
             agreement = np.clip(layer1 * layer2, 0, None)
             frame = np.clip(frame + (agreement * 70)[:, None], 0, 255)
-        self.t += self.speed
+        frame = np.clip(frame * brightness_scale, 0, 255)
+        self.t += self.speed * speed_scale
         return frame.astype(np.uint8)
 
 
@@ -112,9 +119,15 @@ class OrganicCometEffect:
         self.seed = seed
         self.t = 0.0
 
-    def step(self):
+    def step(self, intensity: float = 1.0):
+        """intensity is the current activity_level (0..1) - quiet rooms get
+        a slower, dimmer comet; lively rooms get a faster, brighter one."""
+        intensity = min(max(intensity, 0.0), 1.0)
+        speed_scale = 0.3 + 0.9 * intensity
+        brightness_scale = 0.4 + 0.8 * intensity
+
         wobble = 0.35 * value_noise(np.array([self.t]), np.array([0.0]), seed=self.seed)[0]
-        self.pos = (self.pos + self.speed * (1 + wobble)) % self.n
+        self.pos = (self.pos + self.speed * speed_scale * (1 + wobble)) % self.n
         self.trail *= self.decay
         idx0 = int(np.floor(self.pos)) % self.n
         idx1 = (idx0 + 1) % self.n
@@ -124,6 +137,7 @@ class OrganicCometEffect:
         palette_index = int((self.pos / self.n) * (len(self.lut) - 1))
         comet_color = self.lut[palette_index]
         frame = self.background[None, :] + (comet_color - self.background)[None, :] * self.trail[:, None]
+        frame = frame * brightness_scale
         self.t += 0.4
         return np.clip(frame, 0, 255).astype(np.uint8)
 
@@ -145,9 +159,15 @@ class OrganicTwinkleEffect:
         self.decay = np.full(n_pixels, 0.96)
         self.peak = np.ones(n_pixels)
 
-    def step(self):
+    def step(self, intensity: float = 1.0):
+        """intensity is the current activity_level (0..1) - quiet rooms get
+        fewer, dimmer stars; lively rooms get more, brighter ones."""
+        intensity = min(max(intensity, 0.0), 1.0)
+        spawn_scale = 0.3 + 1.4 * intensity
+        brightness_scale = 0.4 + 0.8 * intensity
+
         self.brightness *= self.decay
-        spawn = np.random.random(self.n) < self.spawn_prob
+        spawn = np.random.random(self.n) < self.spawn_prob * spawn_scale
         n_spawn = int(spawn.sum())
         if n_spawn:
             self.brightness[spawn] = 1.0
@@ -157,6 +177,7 @@ class OrganicTwinkleEffect:
         star_colors = self.lut[self.hue_index]
         effective_brightness = self.brightness * self.peak
         frame = self.background[None, :] + (star_colors - self.background) * effective_brightness[:, None]
+        frame = frame * brightness_scale
         return np.clip(frame, 0, 255).astype(np.uint8)
 
 

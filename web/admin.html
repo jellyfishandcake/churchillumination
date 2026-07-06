@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Creative Computing — Admin</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #0f0f14;
+      color: #e8e8ea;
+      margin: 0;
+      padding: 2rem;
+      max-width: 640px;
+      margin-inline: auto;
+    }
+    h1 { font-weight: 300; margin: 0 0 1rem; font-size: 1.4rem; }
+    .panel { background: #1a1a22; border-radius: 8px; padding: 1.5rem; margin-bottom: 1.5rem; }
+    .panel h2 { margin-top: 0; font-weight: 400; font-size: 1rem; color: #888; text-transform: uppercase; letter-spacing: 0.05em; }
+    .field { display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0; border-bottom: 1px solid #2a2a35; gap: 1rem; }
+    .field:last-child { border-bottom: none; }
+    .field-label { color: #aaa; }
+    .field-label small { display: block; color: #666; font-size: 0.75rem; }
+    input, select, button {
+      background: #0f0f14; color: #e8e8ea; border: 1px solid #2a2a35;
+      border-radius: 4px; padding: 0.4rem 0.6rem; font-size: 0.9rem;
+    }
+    button { cursor: pointer; }
+    button:hover { border-color: #4a9eff; }
+    #status { font-size: 0.85rem; color: #666; }
+    #status.connected { color: #4ade80; }
+    #login-error { color: #ff6b6b; font-size: 0.85rem; margin-top: 0.5rem; }
+    #controls { display: none; }
+    #back-link { font-size: 0.85rem; }
+    #back-link a { color: #888; }
+    pre { white-space: pre-wrap; font-size: 0.8rem; color: #aaa; }
+  </style>
+</head>
+<body>
+  <h1>Admin <span id="status">connecting…</span></h1>
+
+  <div class="panel" id="login-panel">
+    <h2>Log in</h2>
+    <div class="field">
+      <span class="field-label">Passcode</span>
+      <input type="password" id="passcode-input">
+    </div>
+    <div class="field">
+      <span></span>
+      <button id="login-button">Log in</button>
+    </div>
+    <div id="login-error"></div>
+  </div>
+
+  <div id="controls">
+    <div class="panel">
+      <h2>Sensors</h2>
+      <div id="sensor-toggles"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Tuning</h2>
+      <div class="field">
+        <span class="field-label">Activation timeout (s)<small>How long the installation stays "activated" after last presence</small></span>
+        <input type="number" id="activation-timeout-input" min="1" step="1">
+      </div>
+      <div class="field">
+        <span class="field-label">Smoothing alpha<small>Lower = calmer, higher = snappier</small></span>
+        <input type="range" id="smoothing-alpha-input" min="0" max="1" step="0.01">
+        <span id="smoothing-alpha-value"></span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Manual state override</h2>
+      <div class="field">
+        <span class="field-label">Mood</span>
+        <select id="override-mood-select">
+          <option value="idle">idle</option>
+          <option value="calm">calm</option>
+          <option value="neutral">neutral</option>
+          <option value="lively">lively</option>
+        </select>
+      </div>
+      <div class="field">
+        <span class="field-label">Activity level</span>
+        <input type="range" id="override-activity-input" min="0" max="1" step="0.01">
+        <span id="override-activity-value"></span>
+      </div>
+      <div class="field">
+        <span></span>
+        <span>
+          <button id="apply-override-button">Apply</button>
+          <button id="clear-override-button">Clear</button>
+        </span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Status</h2>
+      <pre id="status-readout">—</pre>
+    </div>
+  </div>
+
+  <div id="back-link"><a href="/index.html">← Back to dashboard</a></div>
+
+  <script src="/wsClient.js"></script>
+  <script src="/admin.js"></script>
+</body>
+</html>

@@ -33,11 +33,43 @@
     #status.connected { color: #4ade80; }
     #sketch-container { grid-column: 1 / -1; background: #000; border-radius: 8px; overflow: hidden; }
     #sketch-container canvas { display: block; width: 100%; height: auto; }
+    select { background: #0f0f14; color: #e8e8ea; border: 1px solid #2a2a35; border-radius: 4px; padding: 0.4rem 0.6rem; font-size: 0.9rem; }
+    .swatch-strip { width: 100%; height: 32px; image-rendering: pixelated; border-radius: 4px; margin-top: 0.5rem; display: block; }
+    .stage-label { color: #888; font-size: 0.8rem; }
+    .stage-label small { display: block; color: #555; font-size: 0.72rem; margin-top: 0.15rem; }
+    #admin-link { grid-column: 1 / -1; text-align: right; font-size: 0.85rem; }
+    #admin-link a { color: #888; }
   </style>
 </head>
 <body>
   <h1>Creative Computing <span id="status">connecting…</span></h1>
- 
+
+  <div class="panel">
+    <h2>Effect</h2>
+    <div class="metric">
+      <span class="metric-label">Pattern</span>
+      <select id="effect-select"></select>
+    </div>
+    <div class="metric">
+      <span class="metric-label">Palette</span>
+      <select id="palette-select"></select>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Pipeline</h2>
+    <div class="stage-label">
+      1. Sampled from the sketch canvas
+      <small>What the p5 sketch would send, if it were driving the LEDs (it currently isn't — see stage 2)</small>
+    </div>
+    <canvas id="sampled-frame-canvas" class="swatch-strip" width="60" height="1"></canvas>
+    <div class="stage-label" style="margin-top: 1rem;">
+      2. LED output — actual, from the selected effect
+      <small>This is what really reaches the strip right now</small>
+    </div>
+    <canvas id="led-frame-canvas" class="swatch-strip" width="60" height="1"></canvas>
+  </div>
+
   <div class="panel">
     <h2>Sensors</h2>
     <div class="metric">
@@ -73,9 +105,12 @@
   </div>
  
   <div id="sketch-container"></div>
- 
+
+  <div id="admin-link"><a href="/admin.html">Admin →</a></div>
+
   <script src="https://cdn.jsdelivr.net/npm/p5@1.11.0/lib/p5.min.js"></script>
   <script src="/pixelMap.js"></script>
+  <script src="/wsClient.js"></script>
   <script src="/sketch.js"></script>
   <script src="/app.js"></script>
 </body>

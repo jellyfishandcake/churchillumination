@@ -24,35 +24,43 @@ from src.intelligence import rules
 from src.intelligence.activation import ActivationTracker
 from src.mapping.visuals import state_to_visual
 from src.output.leds import LEDStrip
+from src.output.effects import registry
+from src.output.effects.colour_palette import PALETTES
+from src.output.effects.led_effects import apply_gamma
 from src.intelligence import server
 
 
-def build_sensors(config: dict) -> list:
-    """Build the sensor list from config's `sensors.*.enabled` flags. Every
-    sensor class auto-falls-back to a mock if its hardware/library isn't
-    present, so this list is safe to build the same way on a dev laptop and
-    on the Pi — config only controls which sensors are wired in at all."""
+def build_sensors(config: dict) -> dict:
+    """Build the sensor dict, keyed by the same name used in config's
+    `sensors.*` block, from each `enabled` flag. Every sensor class
+    auto-falls-back to a mock if its hardware/library isn't present, so
+    this is safe to build the same way on a dev laptop and on the Pi —
+    config only controls which sensors are wired in at all.
+
+    Only sensors starting enabled are constructed: AudioSensor/PIRSensor
+    bind real hardware (a mic stream, a GPIO pin) in __init__, not in
+    .read(), so a sensor disabled here can't be turned on at runtime
+    without a restart — sensor_loop's per-tick enabled check only supports
+    live-disabling (and re-enabling) a sensor that started enabled."""
     sensors_config = config["sensors"]
-    sensors = []
+    sensors = {}
 
     if sensors_config["audio"]["enabled"]:
-        sensors.append(AudioSensor())
+        sensors["audio"] = AudioSensor()
     if sensors_config["motion"]["enabled"]:
-        sensors.append(MotionSensor())
+        sensors["motion"] = MotionSensor()
     if sensors_config["sense_hat"]["enabled"]:
-        sensors.append(SenseHatSensor())
+        sensors["sense_hat"] = SenseHatSensor()
     if sensors_config["pir"]["enabled"]:
-        sensors.append(PIRSensor(gpio_pin=sensors_config["pir"]["gpio_pin"]))
+        sensors["pir"] = PIRSensor(gpio_pin=sensors_config["pir"]["gpio_pin"])
     if sensors_config["heart_rate"]["enabled"]:
-        sensors.append(HeartRateSensor())
+        sensors["heart_rate"] = HeartRateSensor()
     if sensors_config["nodes"]["enabled"]:
         nodes_config = sensors_config["nodes"]
-        sensors.append(
-            NodeSensor(
-                node_ids=nodes_config["node_ids"],
-                mqtt_host=nodes_config["mqtt_host"],
-                mqtt_port=nodes_config["mqtt_port"],
-            )
+        sensors["nodes"] = NodeSensor(
+            node_ids=nodes_config["node_ids"],
+            mqtt_host=nodes_config["mqtt_host"],
+            mqtt_port=nodes_config["mqtt_port"],
         )
 
     return sensors
@@ -90,11 +98,20 @@ async def sensor_loop(sensors, infer, activation_tracker):
     primary way failures get handled: without it, one such bug would still
     crash the whole asyncio.gather() in main(), taking the LED loop and the
     WebSocket server down along with the sensor that actually failed.
+
+    activation_tracker's timeout, the smoothing alpha, and an optional
+    state override are all read live from server.runtime_settings each
+    tick, so the admin terminal's controls take effect without a restart.
     """
     smoothed = {}
     while True:
+        activation_tracker.timeout = server.runtime_settings["activation_timeout_seconds"]
+        alpha = server.runtime_settings["smoothing_alpha"]
+
         raw = {}
-        for s in sensors:
+        for name, s in sensors.items():
+            if not server.runtime_settings["sensors_enabled"].get(name, True):
+                continue  # live-disabled via the admin terminal
             try:
                 raw.update(s.read())
             except Exception as exc:
@@ -104,9 +121,13 @@ async def sensor_loop(sensors, infer, activation_tracker):
         presence = raw.get("presence", 0.0) > 0.5
         raw["activated"] = activation_tracker.update(presence, time.time())
 
-        smoothed = _smooth_readings(smoothed, raw, SMOOTHING_ALPHA)
+        smoothed = _smooth_readings(smoothed, raw, alpha)
 
         state = infer(smoothed)
+        override = server.runtime_settings["state_override"]
+        if override is not None:
+            state.mood = override["mood"]
+            state.activity_level = override["activity_level"]
         visual = state_to_visual(state)
 
         # Update the shared dict the server reads from
@@ -116,37 +137,78 @@ async def sensor_loop(sensors, infer, activation_tracker):
         # sensors are currently running on their mock due to a real failure
         # (as opposed to simply not having that hardware configured at all).
         server.latest["sensor_health"] = {
-            type(s).__name__: {"healthy": s.healthy, "last_error": s.last_error} for s in sensors
+            name: {"healthy": s.healthy, "last_error": s.last_error} for name, s in sensors.items()
         }
 
         await asyncio.sleep(0.05)  # 20 Hz
- 
- 
-async def led_loop(leds):
-    """Take pixels the browser sent back and push to LEDs. 20 Hz."""
+
+
+async def led_loop(leds, num_pixels):
+    """Step the currently-selected system effect and push it to the LED
+    strip. 20 Hz.
+
+    Effect/palette selection lives in server.runtime_settings (set by the
+    terminal's picker). The effect instance is only rebuilt when the
+    selection actually changes — effect objects hold animation state
+    (self.t, self.trail, ...) that must survive across ticks, so rebuilding
+    every tick would e.g. stop the comet's trail from ever accumulating.
+
+    The browser's canvas-sampling pipeline (app.js/sketch.js/pixelMap.js,
+    still sending {"pixels": [...]}) keeps running but is intentionally
+    unconsumed here — kept for its own visual/demo value and as groundwork
+    for a future user-sketch-upload feature, not because it's a bug.
+    """
+    current_effect_name = None
+    current_palette_name = None
+    effect = None
+
     while True:
-        pixels = server.incoming["pixels"]
-        if pixels is not None:
-            leds.render_pixels(pixels)
-        await asyncio.sleep(0.05)
- 
- 
+        effect_name = server.runtime_settings["effect"] or registry.DEFAULT_EFFECT
+        palette_name = server.runtime_settings["palette"] or registry.DEFAULT_PALETTE
+
+        if (effect_name, palette_name) != (current_effect_name, current_palette_name):
+            effect_class = registry.EFFECTS.get(effect_name, registry.EFFECTS[registry.DEFAULT_EFFECT])
+            palette = PALETTES.get(palette_name, PALETTES[registry.DEFAULT_PALETTE])
+            effect = effect_class(num_pixels, palette)
+            current_effect_name, current_palette_name = effect_name, palette_name
+
+        intensity = server.latest["state"]["activity_level"]
+        frame = apply_gamma(effect.step(intensity)).tolist()  # numpy -> plain ints, for JSON
+
+        leds.render_pixels(frame)
+        server.latest["led_frame"] = frame
+
+        await asyncio.sleep(0.05)  # 20 Hz
+
+
 async def main():
     config = load_config()
     sensors = build_sensors(config)
     leds = LEDStrip(num_pixels=config["leds"]["num_pixels"])
     infer = rules.infer_state
     activation_tracker = ActivationTracker(timeout=config["activation"]["timeout_seconds"])
+
     server.latest["leds"] = {
         "num_pixels": config["leds"]["num_pixels"],
         "layout": config["leds"]["layout"],
     }
+    server.latest["effects"] = list(registry.EFFECTS.keys())
+    server.latest["palettes"] = list(PALETTES.keys())
+
+    server.admin_passcode = config["admin"]["passcode"]
+    server.runtime_settings["effect"] = config["effects"]["default_effect"]
+    server.runtime_settings["palette"] = config["effects"]["default_palette"]
+    server.runtime_settings["sensors_enabled"] = {
+        name: cfg["enabled"] for name, cfg in config["sensors"].items()
+    }
+    server.runtime_settings["activation_timeout_seconds"] = config["activation"]["timeout_seconds"]
+    server.runtime_settings["smoothing_alpha"] = SMOOTHING_ALPHA
 
     # Run all three concurrently. gather() waits for all to finish
     # (they won't — they're infinite loops).
     await asyncio.gather(
         sensor_loop(sensors, infer, activation_tracker),
-        led_loop(leds),
+        led_loop(leds, config["leds"]["num_pixels"]),
         server.start_server(host=config["server"]["host"], port=config["server"]["port"]),
     )
  

@@ -60,6 +60,21 @@ const sketch = (p) => {
       p.fill(localHue, sat, bri);
       p.rect(x, 0, 4, H);
     }
+
+    // Sampling visualizer: mark exactly where each LED's colour would be
+    // read from, so the pixel-map sampling process is visible, not just
+    // the abstract flow field. window.pixelMap is set by app.js once the
+    // server's LED config + this sketch's canvas size are both known.
+    if (window.pixelMap) {
+      p.push();
+      p.noFill();
+      p.stroke(0, 0, 100); // white ring, still in this sketch's HSB mode
+      p.strokeWeight(1);
+      for (const { x, y } of window.pixelMap) {
+        p.circle(x, y, 6);
+      }
+      p.pop();
+    }
   };
  
   // Called by app.js with a pixel map (array of {x, y} points, one per LED,

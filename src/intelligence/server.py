@@ -33,11 +33,43 @@ latest = {
 # When the browser sends colours back, we stash them here so main.py can pick up.
 # Same pattern: shared dict, one writer, one reader.
 incoming = {"pixels": None}
- 
+
 # Set of connected browser WebSockets (usually 1 — you, watching the dashboard)
 clients = set()
- 
- 
+
+# Terminal control state - the admin/public terminal pages mutate this via
+# `{"control": {...}}` messages (see _handle_control below); main.py's loops
+# read it each tick. Same "simple shared dict" philosophy as `latest`/
+# `incoming` above. Real values are seeded from config in main.py's main() -
+# these are just structurally-valid placeholders so the server can run
+# before that happens.
+runtime_settings = {
+    "effect": None,
+    "palette": None,
+    "sensors_enabled": {},
+    "activation_timeout_seconds": None,
+    "smoothing_alpha": None,
+    "state_override": None,
+}
+
+# Passcode gating admin-only actions, and the set of connections that have
+# proven they know it. Both set once from config in main.py's main().
+# admin_passcode is deliberately never included in any broadcast payload.
+admin_passcode = None
+admin_clients = set()
+
+# Actions only an authenticated admin connection may perform. "admin_login"
+# and "set_effect" are intentionally absent - login is how you become admin,
+# and the effect/palette picker is the one control public users get.
+ADMIN_ACTIONS = {
+    "toggle_sensor",
+    "set_activation_timeout",
+    "set_smoothing_alpha",
+    "set_state_override",
+    "clear_state_override",
+}
+
+
 async def handle_client(websocket):
     """Called once per browser connection. Sends the latest state ~20x/sec,
     and reads any messages the browser sends back."""
@@ -54,25 +86,96 @@ async def handle_client(websocket):
             t.cancel()
     finally:
         clients.discard(websocket)
- 
- 
+        admin_clients.discard(websocket)
+
+
 async def send_loop(websocket):
     """Push the latest state to the browser 20 times per second."""
     while True:
-        await websocket.send(json.dumps(latest))
+        payload = {**latest, "runtime_settings": runtime_settings}
+        await websocket.send(json.dumps(payload))
         await asyncio.sleep(0.05)  # 20 Hz
- 
- 
+
+
 async def recv_loop(websocket):
-    """Receive colour arrays sampled from the browser canvas."""
+    """Receive messages from the browser: either sampled canvas colours
+    (legacy `{"pixels": [...]}`, currently unconsumed - see main.py's
+    led_loop) or a terminal control message."""
     async for message in websocket:
         try:
             data = json.loads(message)
             if "pixels" in data:
                 # Expected: [[r,g,b], [r,g,b], ...]  (one triple per LED)
                 incoming["pixels"] = data["pixels"]
+            elif "control" in data:
+                await _handle_control(websocket, data["control"])
         except (json.JSONDecodeError, KeyError):
             pass  # Ignore malformed messages
+
+
+async def _handle_control(websocket, payload: dict) -> None:
+    """Dispatch a control message. Only structural validation happens here
+    (right types, sane ranges) - domain validation (is this a real effect
+    or sensor name?) belongs to whichever of main.py's loops actually owns
+    that registry; they already need a "fall back safely" path for a stale
+    or bad value regardless, so that's where it naturally lives. Keeps this
+    module a dumb transport layer with no imports from src.sensing/output."""
+    action = payload.get("action")
+
+    if action == "admin_login":
+        ok = payload.get("passcode") == admin_passcode
+        if ok:
+            admin_clients.add(websocket)
+        else:
+            print(f"[server] admin_login failed from {websocket.remote_address}")
+        # Direct, targeted reply - the only one needed, since every other
+        # action's effect becomes visible to all clients via the normal
+        # broadcast within 50ms.
+        await websocket.send(json.dumps({"control_ack": {"action": "admin_login", "ok": ok}}))
+        return
+
+    if action in ADMIN_ACTIONS and websocket not in admin_clients:
+        print(f"[server] rejected admin action {action!r} from unauthenticated client")
+        return
+
+    if action == "set_effect":
+        effect = payload.get("effect")
+        palette = payload.get("palette")
+        if isinstance(effect, str) and isinstance(palette, str):
+            runtime_settings["effect"] = effect
+            runtime_settings["palette"] = palette
+
+    elif action == "toggle_sensor":
+        sensor = payload.get("sensor")
+        enabled = payload.get("enabled")
+        if isinstance(sensor, str) and isinstance(enabled, bool):
+            runtime_settings["sensors_enabled"][sensor] = enabled
+
+    elif action == "set_activation_timeout":
+        seconds = payload.get("seconds")
+        if isinstance(seconds, (int, float)) and not isinstance(seconds, bool) and seconds > 0:
+            runtime_settings["activation_timeout_seconds"] = float(seconds)
+
+    elif action == "set_smoothing_alpha":
+        alpha = payload.get("alpha")
+        if isinstance(alpha, (int, float)) and not isinstance(alpha, bool) and 0.0 <= alpha <= 1.0:
+            runtime_settings["smoothing_alpha"] = float(alpha)
+
+    elif action == "set_state_override":
+        mood = payload.get("mood")
+        activity_level = payload.get("activity_level")
+        valid_activity = isinstance(activity_level, (int, float)) and not isinstance(activity_level, bool)
+        if isinstance(mood, str) and valid_activity:
+            runtime_settings["state_override"] = {
+                "mood": mood,
+                "activity_level": min(max(float(activity_level), 0.0), 1.0),
+            }
+
+    elif action == "clear_state_override":
+        runtime_settings["state_override"] = None
+
+    else:
+        print(f"[server] ignoring unknown control action: {action!r}")
  
  
 # ---- Static file serving ---------------------------------------------------

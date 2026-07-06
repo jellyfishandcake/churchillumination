@@ -8,6 +8,12 @@ DEFAULTS = {
     "server": {"host": "localhost", "port": 8000},
     "leds": {"num_pixels": 60, "layout": "strip"}, # change this number in config for default number of pixels to drive
     "activation": {"timeout_seconds": 300.0},
+    "effects": {"default_effect": "organic_wave", "default_palette": "winter"},
+    # Shared passcode gating admin-only terminal controls (sensor toggles,
+    # activation/smoothing tuning, manual state override). CHANGE THIS in
+    # config.yaml before any real use - it's sent in plaintext over the
+    # local websocket, a low-security gate suitable only for a private LAN.
+    "admin": {"passcode": "changeme"},
     "sensors": {
         "audio": {"enabled": True},
         "motion": {"enabled": True},
