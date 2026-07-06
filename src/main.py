@@ -11,6 +11,7 @@ The orchestrator. Runs three things concurrently:
 All three share one asyncio event loop. Nothing blocks the others.
 """
 import asyncio
+import time
 
 from src.config import load_config
 from src.sensing.audio import AudioSensor
@@ -20,6 +21,7 @@ from src.sensing.pir import PIRSensor
 from src.sensing.heart_rate import HeartRateSensor
 from src.sensing.nodes import NodeSensor
 from src.intelligence import rules
+from src.intelligence.activation import ActivationTracker
 from src.mapping.visuals import state_to_visual
 from src.output.leds import LEDStrip
 from src.intelligence import server
@@ -79,7 +81,7 @@ def _smooth_readings(previous: dict, current: dict, alpha: float) -> dict:
     return smoothed
 
 
-async def sensor_loop(sensors, infer):
+async def sensor_loop(sensors, infer, activation_tracker):
     """Read sensors, smooth them, compute state, publish to shared dict. 20 Hz.
 
     Each sensor now handles its own hardware failures internally — it falls
@@ -98,6 +100,11 @@ async def sensor_loop(sensors, infer):
                 raw.update(s.read())
             except Exception as exc:
                 print(f"[sensor_loop] {type(s).__name__}.read() raised even past its own fallback — skipping this tick: {exc}")
+
+        # "activated" is derived from raw (not smoothed) presence, since it's
+        # a debounced on/off decision, not a level that benefits from EMA.
+        presence = raw.get("presence", 0.0) > 0.5
+        raw["activated"] = activation_tracker.update(presence, time.time())
 
         smoothed = _smooth_readings(smoothed, raw, SMOOTHING_ALPHA)
 
@@ -131,11 +138,12 @@ async def main():
     sensors = build_sensors(config)
     leds = LEDStrip(num_pixels=config["leds"]["num_pixels"])
     infer = rules.infer_state
+    activation_tracker = ActivationTracker(timeout=config["activation"]["timeout_seconds"])
 
     # Run all three concurrently. gather() waits for all to finish
     # (they won't — they're infinite loops).
     await asyncio.gather(
-        sensor_loop(sensors, infer),
+        sensor_loop(sensors, infer, activation_tracker),
         led_loop(leds),
         server.start_server(host=config["server"]["host"], port=config["server"]["port"]),
     )

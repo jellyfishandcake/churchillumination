@@ -36,7 +36,7 @@ class MotionSensor(Sensor):
             except Exception:
                 self._picam = None  # no Pi camera attached
 
-        if self._picam is None:
+        if self._picam is None: # if not camera sensor available, fall back on webcam
             cam = cv2.VideoCapture(0)  # open the default camera (webcam)
             if cam.isOpened():
                 self._cv_cam = cam

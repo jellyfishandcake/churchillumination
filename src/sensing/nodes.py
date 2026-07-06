@@ -70,4 +70,5 @@ class NodeSensor(Sensor):
 
 
 def _mock_node_reading() -> dict:
-    return {"loudness": random.uniform(0.0, 0.2), "motion": random.uniform(0.0, 0.1)}
+    return {"loudness": random.uniform(0.0, 0.2), "motion": random.uniform(0.0, 0.1)} 
+# sort out this motion - remember no camera design 

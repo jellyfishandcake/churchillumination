@@ -7,6 +7,7 @@ import yaml
 DEFAULTS = {
     "server": {"host": "localhost", "port": 8000},
     "leds": {"num_pixels": 60},
+    "activation": {"timeout_seconds": 300.0},
     "sensors": {
         "audio": {"enabled": True},
         "motion": {"enabled": True},

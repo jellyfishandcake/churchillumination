@@ -12,6 +12,8 @@ On a Raspberry Pi 5, gpiozero's default pin factory (RPi.GPIO) doesn't
 support the Pi 5's GPIO chip — install `lgpio` too (see
 requirements-pi.txt).
 """
+
+# This will be on main station and 2 side nodes, to save power under idle states
 import random
 
 from .base import Sensor
