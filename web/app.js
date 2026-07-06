@@ -15,7 +15,11 @@ window.appState = {
 };
  
 const status = document.getElementById("status");
- 
+
+// Built once we've received the server's LED config and the sketch has
+// created its canvas. Left null until both are ready.
+let pixelMap = null;
+
 function connect() {
   // Same host/port as the page — served from the Python websockets library
   const ws = new WebSocket(`ws://${location.host}`);
@@ -34,8 +38,17 @@ function connect() {
  
   ws.onmessage = (event) => {
     const data = JSON.parse(event.data);
-    const { state, visual } = data;
- 
+    const { state, visual, leds } = data;
+
+    if (!pixelMap && leds && window.buildPixelMap && window.sketchDimensions) {
+      pixelMap = window.buildPixelMap(
+        leds.layout,
+        leds.num_pixels,
+        window.sketchDimensions.width,
+        window.sketchDimensions.height
+      );
+    }
+
     // Update the globals the sketch reads
     window.appState.mood = state.mood;
     window.appState.activity = state.activity_level;
@@ -69,8 +82,9 @@ connect();
 setInterval(() => {
   if (window.ws?.readyState !== WebSocket.OPEN) return;
   if (typeof window.sampleCanvas !== "function") return;
- 
-  const pixels = window.sampleCanvas(60); // 60 LEDs
+  if (!pixelMap) return; // still waiting on the server's LED config
+
+  const pixels = window.sampleCanvas(pixelMap);
   if (pixels) {
     window.ws.send(JSON.stringify({ pixels }));
   }

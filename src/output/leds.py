@@ -1,7 +1,7 @@
 class LEDStrip:
     def __init__(self, num_pixels: int = 60):
         self.num_pixels = num_pixels
-        # TODO: init real hardware later (rpi_ws281x on the Pi)
+        # set up dotstar here 
  
     def render(self, visual: dict) -> None:
         """Legacy path: one hue + brightness for the whole strip.
@@ -12,7 +12,7 @@ class LEDStrip:
         """New path: an array of [r,g,b] triples, one per LED.
         This is what the browser sends after sampling its p5 canvas.
  
-        For now we just print a summary. On the Pi this will drive rpi_ws281x."""
+        For now we just print a summary. On the Pi this will drive led."""
         if not pixels:
             return
         # Print first, middle, last so you can see something changing without

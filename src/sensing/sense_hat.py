@@ -46,8 +46,7 @@ class SenseHatSensor(Sensor):
                 "pressure": self._hat.get_pressure(),
             }
         except Exception as exc:
-            # Board was working, then a live read failed — same fallback as
-            # "board not attached at all".
+            # Board was working, but if a live read failed — fallback on mock values
             self._mark_failed(exc)
             return _mock_reading()
 
@@ -62,3 +61,4 @@ def _mock_reading() -> dict:
         "humidity": random.uniform(35.0, 55.0),
         "pressure": random.uniform(1000.0, 1020.0),
     }
+# check these mock values in sensor calibration!

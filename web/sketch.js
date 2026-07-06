@@ -33,6 +33,8 @@ const sketch = (p) => {
     sketchCanvas.parent("sketch-container");
     p.colorMode(p.HSB, 360, 100, 100);
     p.noStroke();
+    // So app.js can build a pixel map without hardcoding canvas size here too.
+    window.sketchDimensions = { width: W, height: H };
   };
 
   p.draw = () => {
@@ -60,18 +62,16 @@ const sketch = (p) => {
     }
   };
  
-  // Called by app.js — samples the canvas at N evenly-spaced points along y=H/2
-  // and returns an array of [r,g,b] triples. This is the MIT pattern from
-  // PlayingNow.vue, adapted for instance-mode + our pixel-per-LED contract.
-  window.sampleCanvas = (n) => {
-    if (!sketchCanvas) return null;
+  // Called by app.js with a pixel map (array of {x, y} points, one per LED,
+  // built by pixelMap.js) and returns an array of [r,g,b] triples sampled at
+  // those exact canvas coordinates.
+  window.sampleCanvas = (pixelMap) => {
+    if (!sketchCanvas || !pixelMap) return null;
     // Switch to RGB briefly to read pixel colours as 0-255
     p.colorMode(p.RGB, 255);
     p.loadPixels();
     const pixels = [];
-    const y = Math.floor(H / 2);
-    for (let i = 0; i < n; i++) {
-      const x = Math.floor((i / (n - 1)) * (W - 1));
+    for (const { x, y } of pixelMap) {
       const idx = (y * W + x) * 4;
       pixels.push([p.pixels[idx], p.pixels[idx + 1], p.pixels[idx + 2]]);
     }

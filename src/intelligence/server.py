@@ -25,6 +25,9 @@ latest = {
     "state": {"activity_level": 0.0, "mood": "neutral", "presence_count": 0},
     "visual": {"hue": 200, "brightness": 0.2},
     "sensor_health": {},
+    # LED count + physical layout, so the browser can build the pixel map
+    # itself instead of guessing a hardcoded LED count.
+    "leds": {"num_pixels": 60, "layout": "strip"},
 }
  
 # When the browser sends colours back, we stash them here so main.py can pick up.

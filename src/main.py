@@ -139,6 +139,10 @@ async def main():
     leds = LEDStrip(num_pixels=config["leds"]["num_pixels"])
     infer = rules.infer_state
     activation_tracker = ActivationTracker(timeout=config["activation"]["timeout_seconds"])
+    server.latest["leds"] = {
+        "num_pixels": config["leds"]["num_pixels"],
+        "layout": config["leds"]["layout"],
+    }
 
     # Run all three concurrently. gather() waits for all to finish
     # (they won't — they're infinite loops).

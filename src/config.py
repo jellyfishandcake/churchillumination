@@ -6,7 +6,7 @@ import yaml
 
 DEFAULTS = {
     "server": {"host": "localhost", "port": 8000},
-    "leds": {"num_pixels": 60},
+    "leds": {"num_pixels": 60, "layout": "strip"}, # change this number in config for default number of pixels to drive
     "activation": {"timeout_seconds": 300.0},
     "sensors": {
         "audio": {"enabled": True},
@@ -18,7 +18,7 @@ DEFAULTS = {
             "enabled": True,
             "mqtt_host": "localhost",
             "mqtt_port": 1883,
-            "node_ids": ["node1", "node2", "node3"],
+            "node_ids": ["node1", "node2"],
         },
     },
 }
