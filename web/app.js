@@ -11,8 +11,6 @@ window.appState = {
   mood: "neutral",
   activity: 0.0,
   presenceCount: 0,
-  hue: 200,
-  brightness: 0.2,
 };
 
 const status = document.getElementById("status");
@@ -60,7 +58,7 @@ function paintSwatchStrip(ctx, canvas, frame) {
 }
 
 const wsHandle = window.connectWS((data) => {
-  const { state, visual, leds, effects, palettes, runtime_settings, led_frame } = data;
+  const { state, leds, effects, palettes, runtime_settings, led_frame, palette_data } = data;
 
   if (!pixelMap && leds && window.buildPixelMap && window.sketchDimensions) {
     pixelMap = window.buildPixelMap(
@@ -70,6 +68,11 @@ const wsHandle = window.connectWS((data) => {
       window.sketchDimensions.height
     );
     window.pixelMap = pixelMap; // for sketch.js's sample-point overlay
+    window.numPixels = leds.num_pixels; // for sketch.js's own effect instance
+  }
+
+  if (!window.paletteData && palette_data) {
+    window.paletteData = palette_data; // real colours for sketch.js to use
   }
 
   if (!selectsPopulated && effects && palettes) {
@@ -84,12 +87,13 @@ const wsHandle = window.connectWS((data) => {
     paintSwatchStrip(ledFrameCtx, ledFrameCanvas, led_frame);
   }
 
-  // Update the globals the sketch reads
+  // Update the globals the sketch reads.
   window.appState.mood = state.mood;
   window.appState.activity = state.activity_level;
   window.appState.presenceCount = state.presence_count;
-  window.appState.hue = visual.hue;
-  window.appState.brightness = visual.brightness;
+  if (runtime_settings) {
+    window.appState.palette = runtime_settings.palette; // which named palette to draw with
+  }
 
   // We don't yet get raw noise separately from the server — for now we
   // approximate it as activity_level. When we split them apart in
@@ -103,8 +107,6 @@ const wsHandle = window.connectWS((data) => {
   document.getElementById("activity-bar").style.width = `${state.activity_level * 100}%`;
   document.getElementById("mood-value").textContent = state.mood;
   document.getElementById("presence-value").textContent = state.presence_count;
-  document.getElementById("hue-value").textContent = visual.hue;
-  document.getElementById("brightness-value").textContent = visual.brightness.toFixed(2);
 }, status);
 
 function sendEffectChoice() {

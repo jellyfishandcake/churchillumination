@@ -1,13 +1,8 @@
 class LEDStrip:
     def __init__(self, num_pixels: int = 60):
         self.num_pixels = num_pixels
-        # set up dotstar here 
- 
-    def render(self, visual: dict) -> None:
-        """Legacy path: one hue + brightness for the whole strip.
-        Still used before the browser is connected."""
-        print(f"LEDs -> hue {visual['hue']:>3}, brightness {visual['brightness']:.2f}")
- 
+        # set up dotstar here
+
     def render_pixels(self, pixels: list) -> None:
         """New path: an array of [r,g,b] triples, one per LED.
         This is what the browser sends after sampling its p5 canvas.

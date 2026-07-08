@@ -1,10 +1,10 @@
 """
 The orchestrator. Runs three things concurrently:
 
-  1. Sensor loop        — reads sensors, computes state + visual, updates
-                          the shared `latest` dict (which the server reads).
-  2. LED output loop    — reads colours coming back from the browser, sends
-                          them to the LED strip (or prints, for now).
+  1. Sensor loop        — reads sensors, computes state, updates the shared
+                          `latest` dict (which the server reads).
+  2. LED output loop    — steps the selected system effect, sends it to the
+                          LED strip (or prints, for now).
   3. WebSocket server   — publishes state to the browser dashboard, receives
                           canvas colours back.
 
@@ -22,7 +22,6 @@ from src.sensing.heart_rate import HeartRateSensor
 from src.sensing.nodes import NodeSensor
 from src.intelligence import rules
 from src.intelligence.activation import ActivationTracker
-from src.mapping.visuals import state_to_visual
 from src.output.leds import LEDStrip
 from src.output.effects import registry
 from src.output.effects.colour_palette import PALETTES
@@ -70,7 +69,7 @@ def build_sensors(config: dict) -> dict:
 # they reach infer_state. Lower = calmer/slower to react to a single spike,
 # higher = snappier. Without this, one loud cough or a webcam auto-exposure
 # blip swings activity_level (and the mood label) instantly, since nothing
-# else in rules.py/visuals.py remembers what a reading was a moment ago.
+# else in rules.py remembers what a reading was a moment ago.
 SMOOTHING_ALPHA = 0.15
 
 
@@ -128,11 +127,9 @@ async def sensor_loop(sensors, infer, activation_tracker):
         if override is not None:
             state.mood = override["mood"]
             state.activity_level = override["activity_level"]
-        visual = state_to_visual(state)
 
         # Update the shared dict the server reads from
         server.latest["state"] = state.to_dict()
-        server.latest["visual"] = visual
         # Per-sensor health, so a future error/status display can show which
         # sensors are currently running on their mock due to a real failure
         # (as opposed to simply not having that hardware configured at all).
@@ -194,6 +191,10 @@ async def main():
     }
     server.latest["effects"] = list(registry.EFFECTS.keys())
     server.latest["palettes"] = list(PALETTES.keys())
+    # Full colour data (not just names), so a sketch can use the exact same
+    # named palettes the Python effects use - one source of truth, not a
+    # second hand-typed copy of the colours living in JS.
+    server.latest["palette_data"] = dict(PALETTES)
 
     server.admin_passcode = config["admin"]["passcode"]
     server.runtime_settings["effect"] = config["effects"]["default_effect"]

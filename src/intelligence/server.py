@@ -2,7 +2,7 @@
 WebSocket server: the bridge between the Python pipeline and the browser.
  
 Two jobs:
-  1. Publish the latest EnvironmentState + visual to any connected browser (~20Hz).
+  1. Publish the latest EnvironmentState to any connected browser (~20Hz).
      The browser uses this to update its dashboard AND to drive p5 sketches.
   2. Receive a colour array back from the browser (sampled from the p5 canvas)
      and pass it on to the LED strip.
@@ -23,7 +23,6 @@ from websockets.datastructures import Headers
 # For a bigger project you'd use a queue; for now this is fine and clearer.
 latest = {
     "state": {"activity_level": 0.0, "mood": "neutral", "presence_count": 0},
-    "visual": {"hue": 200, "brightness": 0.2},
     "sensor_health": {},
     # LED count + physical layout, so the browser can build the pixel map
     # itself instead of guessing a hardcoded LED count.
