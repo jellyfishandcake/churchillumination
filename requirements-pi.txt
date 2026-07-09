@@ -14,7 +14,11 @@ smbus2      # I2C bus access, used by the hand-rolled MAX30102 driver
             # (src/sensing/heart_rate.py) — no dedicated pip package exists
             # for the MAX30102
 
-# picamera2 is intentionally NOT listed here: Raspberry Pi's own docs say
-# pip install is unreliable/discouraged. Install via:
-#   sudo apt install -y python3-picamera2
-# src/sensing/motion.py treats it as a best-effort optional import.
+# MLX90640 (central thermal motion camera, src/sensing/motion.py) is
+# intentionally NOT listed here: Pimoroni's MLX90640 Python binding isn't
+# a pip package, it's a compiled C extension built from source:
+#   git clone https://github.com/pimoroni/mlx90640-library
+#   cd mlx90640-library && make && sudo make install
+#   cd python/library && make build && sudo make install
+# src/sensing/motion.py treats `import MLX90640` as a best-effort optional
+# import, same pattern as every other sensor's optional hardware library.

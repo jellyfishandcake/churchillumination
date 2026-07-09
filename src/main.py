@@ -116,8 +116,16 @@ async def sensor_loop(sensors, infer, activation_tracker):
             except Exception as exc:
                 print(f"[sensor_loop] {type(s).__name__}.read() raised even past its own fallback — skipping this tick: {exc}")
 
-        # "activated" is derived from raw (not smoothed) presence, does not benefit from smoothing
-        presence = raw.get("presence", 0.0) > 0.5
+        # "activated" is derived from raw (not smoothed) presence, does not benefit
+        # from smoothing. Presence at any of the 3 PIRs (central, via pir.py, plus
+        # the 2 node-mounted ones nested under raw["nodes"][node_id]["presence"])
+        # keeps the installation activated, not just the central one.
+        central_presence = raw.get("presence", 0.0) > 0.5
+        node_presence = any(
+            node_reading.get("presence", 0.0) > 0.5
+            for node_reading in raw.get("nodes", {}).values()
+        )
+        presence = central_presence or node_presence
         raw["activated"] = activation_tracker.update(presence, time.time())
 
         smoothed = _smooth_readings(smoothed, raw, alpha)

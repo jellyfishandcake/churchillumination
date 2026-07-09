@@ -8,7 +8,11 @@ in the same shape build_palette.py and led_effects.py expect.
 The useful trick: you can lock some anchor colours (say, a Churchill
 institutional colour, or a hue you designed by hand) and let the AI fill
 in the rest so they harmonise with it, rather than getting a fully random
-palette every time.
+palette every time. --from-photo does this automatically using colours
+pulled from a real photo (via build_palette.py's extract_palette) as the
+locked anchors - so instead of an unconstrained AI palette, you get one
+that's still rooted in an actual photo, just completed/harmonised by the
+model rather than left as whatever raw colour-clustering produced.
 
 This is a personal, free hobby API with no uptime guarantee (per
 Colormind's own documentation), so treat it as a design-time tool for
@@ -19,6 +23,7 @@ exhibition.
 Usage:
     python3 tools/colormind_palette.py --name evening --model default
     python3 tools/colormind_palette.py --name churchill_locked --lock 0 "#4A1B0C"
+    python3 tools/colormind_palette.py --name autumn_ai --from-photo autumn.jpg --photo-colors 2
 
 Note: this hits a real external endpoint, so it can only be tested with
 network access - it hasn't been run against the live API here, only the
@@ -29,7 +34,11 @@ verified against a simulated response.
 import argparse
 import json
 import os
+import sys
 import urllib.request
+
+sys.path.insert(0, os.path.dirname(__file__))  # so `import build_palette` finds its sibling script
+from build_palette import extract_palette
 
 API_URL = "http://colormind.io/api/"
 
@@ -85,11 +94,24 @@ def main():
     parser.add_argument("--model", default="default", help="e.g. default, ui, or a themed daily model")
     parser.add_argument("--lock", nargs=2, action="append", metavar=("INDEX", "HEX"),
                          help="Lock anchor at INDEX (0-4) to HEX, e.g. --lock 0 #4A1B0C. Repeatable.")
+    parser.add_argument("--from-photo", metavar="IMAGE",
+                         help="Extract anchor colours from a photo (via build_palette.py) and lock "
+                              "them at indices 0..N-1, letting Colormind harmonise the rest.")
+    parser.add_argument("--photo-colors", type=int, default=2,
+                         help="How many colours to pull from --from-photo (default 2, leaving 3 "
+                              "slots for the AI to fill). Only used with --from-photo.")
     parser.add_argument("--out", default="palettes.json")
     args = parser.parse_args()
 
     fixed = {}
+    if args.from_photo:
+        photo_colors = extract_palette(args.from_photo, n_colors=args.photo_colors)
+        for i, hex_code in enumerate(photo_colors):
+            fixed[i] = hex_to_rgb(hex_code)
+        print(f"locked from photo: {photo_colors}")
     if args.lock:
+        # Explicit --lock always wins over --from-photo for the same index,
+        # since it's a more deliberate, specific choice.
         for index_str, hex_code in args.lock:
             fixed[int(index_str)] = hex_to_rgb(hex_code)
 

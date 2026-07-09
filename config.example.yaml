@@ -32,6 +32,8 @@ sensors:
   audio:
     enabled: true
 
+  # Central MLX90640 thermal camera (frame-diff based motion). Falls back
+  # to a mock if the sensor/its library isn't present.
   motion:
     enabled: true
 
@@ -41,7 +43,9 @@ sensors:
   sense_hat:
     enabled: true
 
-  # Mini PIR motion sensor on GPIO. Falls back to a mock off the Pi.
+  # Mini PIR motion sensor on GPIO - the *central* one only. The 2
+  # node-mounted PIRs are on the ESP32 boards themselves (see `nodes`
+  # below), not wired to the Pi. Falls back to a mock off the Pi.
   pir:
     enabled: true
     gpio_pin: 4
@@ -50,9 +54,10 @@ sensors:
   heart_rate:
     enabled: true
 
-  # Seeed XIAO ESP32S3 Sense nodes, publishing readings over MQTT.
-  # Falls back to mock readings per node if the broker is unreachable or a
-  # node hasn't published yet.
+  # 2 Seeed XIAO ESP32S3 Sense nodes (each with mic + MLX90640 thermal
+  # camera + PIR), publishing readings over MQTT. Falls back to mock
+  # readings per node if the broker is unreachable or a node hasn't
+  # published yet.
   nodes:
     enabled: true
     mqtt_host: localhost
@@ -60,4 +65,3 @@ sensors:
     node_ids:
       - node1
       - node2
-      - node3
