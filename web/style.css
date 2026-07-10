@@ -1,0 +1,122 @@
+/* style.css — shared look for index.html / admin.html / contribute.html.
+   One file, one set of tokens: change --accent or --font-label here and it
+   updates every page. Deliberately a single fixed (light) theme, not a
+   dark/light toggle — this is a kiosk display sitting next to the Pi's
+   white-and-red hardware, so it should always look the same regardless of
+   a visitor's phone's own dark-mode setting. */
+
+:root {
+  --bg: #f7f3ec;
+  --panel-bg: #ffffff;
+  --ink: #1c1712;
+  --muted: #8b8175;
+  --hairline: #e4dccc;
+  --accent: #b32548;
+  --accent-soft: rgba(179, 37, 72, 0.08);
+  --accent-2: #d98a3d;
+  --success: #2f9e59;
+  --error: #b5432e;
+
+  --font-body: -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --font-label: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+body {
+  font-family: var(--font-body);
+  background: var(--bg);
+  color: var(--ink);
+  margin: 0;
+  padding: 2rem;
+}
+
+h1 {
+  font-weight: 300;
+  margin: 0 0 1rem;
+  font-size: 1.4rem;
+  color: var(--ink);
+}
+
+.panel {
+  background: var(--panel-bg);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  padding: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+.panel h2 {
+  margin-top: 0;
+  font-family: var(--font-label);
+  font-weight: 600;
+  font-size: 0.78rem;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+.field {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.55rem 0;
+  border-bottom: 1px solid var(--hairline);
+  gap: 1rem;
+}
+.field:last-child { border-bottom: none; }
+.field-label {
+  font-family: var(--font-label);
+  color: var(--ink);
+  opacity: 0.92;
+  font-size: 0.88rem;
+}
+.field-label small {
+  display: block;
+  font-family: var(--font-label);
+  color: var(--ink);
+  opacity: 0.6;
+  font-size: 0.74rem;
+  margin-top: 0.15rem;
+}
+
+input, select {
+  font-family: var(--font-label);
+  background: var(--bg);
+  color: var(--ink);
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.85rem;
+}
+input[type="checkbox"], input[type="range"] {
+  accent-color: var(--accent);
+}
+
+button {
+  font-family: var(--font-body);
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 0.5rem 1rem;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+button:hover:not(:disabled) { opacity: 0.88; }
+button:disabled { opacity: 0.4; cursor: default; }
+
+#status {
+  font-family: var(--font-label);
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+#status.connected { color: var(--success); }
+
+pre {
+  font-family: var(--font-label);
+  white-space: pre-wrap;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+#back-link { font-size: 0.85rem; }
+#back-link a { color: var(--muted); }
