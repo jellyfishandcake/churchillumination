@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Creative Computing — Build a Palette</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #0f0f14;
+      color: #e8e8ea;
+      margin: 0;
+      padding: 2rem;
+      max-width: 640px;
+      margin-inline: auto;
+    }
+    h1 { font-weight: 300; margin: 0 0 1rem; font-size: 1.4rem; }
+    .panel { background: #1a1a22; border-radius: 8px; padding: 1.5rem; margin-bottom: 1.5rem; }
+    .panel h2 { margin-top: 0; font-weight: 400; font-size: 1rem; color: #888; text-transform: uppercase; letter-spacing: 0.05em; }
+    .field { display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0; border-bottom: 1px solid #2a2a35; gap: 1rem; }
+    .field:last-child { border-bottom: none; }
+    .field-label { color: #aaa; }
+    .field-label small { display: block; color: #666; font-size: 0.75rem; }
+    input, select, button {
+      background: #0f0f14; color: #e8e8ea; border: 1px solid #2a2a35;
+      border-radius: 4px; padding: 0.4rem 0.6rem; font-size: 0.9rem;
+    }
+    button { cursor: pointer; }
+    button:hover:not(:disabled) { border-color: #4a9eff; }
+    button:disabled { opacity: 0.5; cursor: default; }
+    #status { font-size: 0.85rem; color: #666; }
+    #status.connected { color: #4ade80; }
+    #job-status { font-size: 0.9rem; margin-top: 0.75rem; min-height: 1.2em; }
+    #job-status.error { color: #ff6b6b; }
+    #job-status.success { color: #4ade80; }
+    #swatch-preview { display: flex; gap: 0.25rem; margin-top: 0.75rem; height: 40px; }
+    #swatch-preview div { flex: 1; border-radius: 4px; }
+    #back-link { font-size: 0.85rem; }
+    #back-link a { color: #888; }
+  </style>
+</head>
+<body>
+  <h1>Build a Palette <span id="status">connecting…</span></h1>
+
+  <div class="panel">
+    <h2>From a photo</h2>
+    <div class="field">
+      <span class="field-label">Photo</span>
+      <input type="file" id="photo-input" accept="image/*">
+    </div>
+    <div class="field">
+      <span class="field-label">Name</span>
+      <input type="text" id="name-input" placeholder="e.g. may_ball_2026">
+    </div>
+    <div class="field">
+      <span class="field-label">Let AI complete it<small>Uses Colormind to harmonise colours around what's pulled from your photo</small></span>
+      <input type="checkbox" id="ai-toggle">
+    </div>
+    <div class="field" id="ncolors-field">
+      <span class="field-label">Colours to extract</span>
+      <input type="number" id="ncolors-input" min="2" max="8" value="4">
+    </div>
+    <div class="field" id="photocolors-field" style="display: none;">
+      <span class="field-label">Colours from photo<small>Of 5 total — the AI fills in the rest</small></span>
+      <input type="number" id="photocolors-input" min="1" max="4" value="2">
+    </div>
+    <div class="field">
+      <span></span>
+      <button id="build-button">Build palette</button>
+    </div>
+    <div id="job-status"></div>
+    <div id="swatch-preview"></div>
+  </div>
+
+  <div id="back-link"><a href="/index.html">← Back to dashboard</a></div>
+
+  <script src="/wsClient.js"></script>
+  <script src="/contribute.js"></script>
+</body>
+</html>

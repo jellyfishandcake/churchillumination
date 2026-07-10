@@ -5,7 +5,12 @@ import pathlib
 import yaml
 
 DEFAULTS = {
-    "server": {"host": "localhost", "port": 8000},
+    # "0.0.0.0" listens on every network interface, not just the Pi itself -
+    # needed so phones on the same WiFi/LAN can reach contribute.html (e.g.
+    # via the QR code). Same private-LAN-only trust model as the admin
+    # passcode below: fine for a closed local network, not a real security
+    # boundary if ever exposed further than that.
+    "server": {"host": "0.0.0.0", "port": 8000},
     "leds": {"num_pixels": 60, "layout": "strip"}, # change this number in config for default number of pixels to drive
     "activation": {"timeout_seconds": 300.0},
     "effects": {"default_effect": "organic_wave", "default_palette": "winter"},

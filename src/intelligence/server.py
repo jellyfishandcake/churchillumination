@@ -13,6 +13,7 @@ http://localhost:8000 in a browser — no separate web server needed.
 import asyncio
 import json
 import pathlib
+import re
 from http import HTTPStatus
 import websockets
 from websockets.http11 import Response
@@ -27,11 +28,21 @@ latest = {
     # LED count + physical layout, so the browser can build the pixel map
     # itself instead of guessing a hardcoded LED count.
     "leds": {"num_pixels": 60, "layout": "strip"},
+    # Progress/result of the most recent contribute.html palette build, so
+    # that page can just read this every broadcast tick instead of needing
+    # a dedicated reply message. See palette_job_request below and
+    # main.py's palette_build_loop, which actually does the work.
+    "palette_job": {"status": "idle", "name": None, "hex_colors": None, "error": None, "overwritten": False},
 }
- 
+
 # When the browser sends colours back, we stash them here so main.py can pick up.
 # Same pattern: shared dict, one writer, one reader.
 incoming = {"pixels": None}
+
+# A pending contribute.html submission, waiting for main.py's
+# palette_build_loop to pick it up and clear this slot. Single-slot (not a
+# queue) - only one build runs at a time, see the "processing" check below.
+palette_job_request = None
 
 # Set of connected browser WebSockets (usually 1 — you, watching the dashboard)
 clients = set()
@@ -57,9 +68,10 @@ runtime_settings = {
 admin_passcode = None
 admin_clients = set()
 
-# Actions only an authenticated admin connection may perform. "admin_login"
-# and "set_effect" are intentionally absent - login is how you become admin,
-# and the effect/palette picker is the one control public users get.
+# Actions only an authenticated admin connection may perform. "admin_login",
+# "set_effect", and "build_palette" are intentionally absent - login is how
+# you become admin, and the effect/palette picker plus the contribute.html
+# palette builder are the controls public users (anyone on the LAN) get.
 ADMIN_ACTIONS = {
     "toggle_sensor",
     "set_activation_timeout",
@@ -67,6 +79,9 @@ ADMIN_ACTIONS = {
     "set_state_override",
     "clear_state_override",
 }
+
+PALETTE_NAME_RE = re.compile(r"^[A-Za-z0-9_\- ]{1,40}$")
+MAX_IMAGE_DATA_URL_CHARS = 8_000_000  # comfortably under max_size below, after base64 overhead
 
 
 async def handle_client(websocket):
@@ -119,6 +134,7 @@ async def _handle_control(websocket, payload: dict) -> None:
     that registry; they already need a "fall back safely" path for a stale
     or bad value regardless, so that's where it naturally lives. Keeps this
     module a dumb transport layer with no imports from src.sensing/output."""
+    global palette_job_request
     action = payload.get("action")
 
     if action == "admin_login":
@@ -172,6 +188,51 @@ async def _handle_control(websocket, payload: dict) -> None:
 
     elif action == "clear_state_override":
         runtime_settings["state_override"] = None
+
+    elif action == "build_palette":
+        name = payload.get("name")
+        image_data_url = payload.get("image_data_url")
+        use_ai = payload.get("use_ai")
+        n_colors = payload.get("n_colors")
+        photo_colors = payload.get("photo_colors")
+
+        if latest["palette_job"]["status"] == "processing":
+            print("[server] rejected build_palette: a job is already processing")
+            return
+        if not (isinstance(name, str) and PALETTE_NAME_RE.match(name)):
+            print(f"[server] rejected build_palette: invalid name {name!r}")
+            return
+        if not (isinstance(image_data_url, str) and image_data_url.startswith("data:image/")):
+            print("[server] rejected build_palette: image_data_url missing/malformed")
+            return
+        if len(image_data_url) > MAX_IMAGE_DATA_URL_CHARS:
+            print("[server] rejected build_palette: image_data_url too large")
+            latest["palette_job"] = {
+                "status": "error", "name": name, "hex_colors": None,
+                "error": "Photo too large - try a smaller one.", "overwritten": False,
+            }
+            return
+        if not isinstance(use_ai, bool):
+            print("[server] rejected build_palette: use_ai not a bool")
+            return
+        if not (isinstance(n_colors, int) and not isinstance(n_colors, bool) and 2 <= n_colors <= 8):
+            print("[server] rejected build_palette: n_colors out of range")
+            return
+        if not (isinstance(photo_colors, int) and not isinstance(photo_colors, bool) and 1 <= photo_colors <= 4):
+            print("[server] rejected build_palette: photo_colors out of range")
+            return
+
+        palette_job_request = {
+            "name": name,
+            "image_data_url": image_data_url,
+            "use_ai": use_ai,
+            "n_colors": n_colors,
+            "photo_colors": photo_colors,
+        }
+        latest["palette_job"] = {
+            "status": "queued", "name": name, "hex_colors": None,
+            "error": None, "overwritten": False,
+        }
 
     else:
         print(f"[server] ignoring unknown control action: {action!r}")
@@ -231,7 +292,12 @@ async def start_server(host="localhost", port=8000):
     """Start the WebSocket + static-file server. Runs forever."""
     print(f"Server running at http://{host}:{port}")
     async with websockets.serve(
-        handle_client, host, port, process_request=serve_static
+        handle_client, host, port, process_request=serve_static,
+        # Default is 1 MiB - contribute.html's downscaled photo uploads stay
+        # well under that in the normal case, but this is defense-in-depth:
+        # exceeding max_size closes the whole connection, not just rejects
+        # the one message, so a little headroom avoids that surprise.
+        max_size=6 * 1024 * 1024,
     ):
         await asyncio.Future()  # run forever
 

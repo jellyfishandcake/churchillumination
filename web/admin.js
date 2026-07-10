@@ -23,11 +23,19 @@ const statusReadout = document.getElementById("status-readout");
 
 let loggedIn = false;
 let sensorTogglesBuilt = false;
+let tabsInitialized = false;
 
 function setLoggedIn(value) {
   loggedIn = value;
   loginPanel.style.display = value ? "none" : "block";
   controls.style.display = value ? "block" : "none";
+  // Only wire up tab-click listeners once - initTabs() isn't idempotent
+  // (repeated calls would stack duplicate click handlers), and login can
+  // happen more than once per page load if the connection drops/reconnects.
+  if (value && !tabsInitialized) {
+    initTabs(controls);
+    tabsInitialized = true;
+  }
 }
 
 function buildSensorToggles(sensorsEnabled, sensorHealth) {

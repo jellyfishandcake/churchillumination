@@ -3,8 +3,12 @@
 # specific settings (GPIO pin numbers, MQTT broker address, etc). Any key
 # you omit falls back to the default in src/config.py.
 
+# "0.0.0.0" listens on the whole local network (not just this machine),
+# so phones on the same WiFi can reach contribute.html (e.g. via the QR
+# code shown on index.html). Same private-LAN-only trust model as the
+# admin passcode below - not a real security boundary beyond that.
 server:
-  host: localhost
+  host: 0.0.0.0
   port: 8000
 
 leds:

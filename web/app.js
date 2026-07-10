@@ -25,22 +25,32 @@ const sampledFrameCtx = sampledFrameCanvas.getContext("2d");
 // created its canvas. Left null until both are ready. Also exposed as
 // window.pixelMap so sketch.js can draw the sample-point overlay.
 let pixelMap = null;
-let selectsPopulated = false;
+let effectsPopulated = false;
 
-function populateSelects(effects, palettes) {
+function populateEffects(effects) {
   for (const name of effects) {
     const opt = document.createElement("option");
     opt.value = name;
     opt.textContent = name.replace(/_/g, " ");
     effectSelect.appendChild(opt);
   }
+  effectsPopulated = true;
+}
+
+// Palettes, unlike effects, can appear at any time - contribute.html (or
+// the CLI tools) can add one while this page is already open. Diff-append
+// any name not already an <option>, every message, instead of populating
+// once - this is what actually makes a freshly-built palette show up here
+// without a manual refresh.
+function syncPaletteOptions(palettes) {
+  const existing = new Set(Array.from(paletteSelect.options).map((o) => o.value));
   for (const name of palettes) {
+    if (existing.has(name)) continue;
     const opt = document.createElement("option");
     opt.value = name;
     opt.textContent = name;
     paletteSelect.appendChild(opt);
   }
-  selectsPopulated = true;
 }
 
 function paintSwatchStrip(ctx, canvas, frame) {
@@ -71,15 +81,23 @@ const wsHandle = window.connectWS((data) => {
     window.numPixels = leds.num_pixels; // for sketch.js's own effect instance
   }
 
-  if (!window.paletteData && palette_data) {
-    window.paletteData = palette_data; // real colours for sketch.js to use
+  // Always refresh (not just once) - a palette can be added at any time via
+  // contribute.html or the CLI tools, and sketch.js needs the real colours
+  // for it the moment it exists, not just at page load.
+  if (palette_data) {
+    window.paletteData = palette_data;
   }
 
-  if (!selectsPopulated && effects && palettes) {
-    populateSelects(effects, palettes);
+  if (!effectsPopulated && effects) {
+    populateEffects(effects);
   }
-  if (selectsPopulated && runtime_settings) {
+  if (palettes) {
+    syncPaletteOptions(palettes);
+  }
+  if (effectsPopulated && runtime_settings) {
     effectSelect.value = runtime_settings.effect;
+  }
+  if (runtime_settings) {
     paletteSelect.value = runtime_settings.palette;
   }
 

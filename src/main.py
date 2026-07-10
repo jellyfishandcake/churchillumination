@@ -1,17 +1,21 @@
 """
-The orchestrator. Runs three things concurrently:
+The orchestrator. Runs four things concurrently:
 
   1. Sensor loop        — reads sensors, computes state, updates the shared
                           `latest` dict (which the server reads).
   2. LED output loop    — steps the selected system effect, sends it to the
                           LED strip (or prints, for now).
-  3. WebSocket server   — publishes state to the browser dashboard, receives
+  3. Palette build loop — processes contribute.html photo-to-palette
+                          requests one at a time, off the event loop.
+  4. WebSocket server   — publishes state to the browser dashboard, receives
                           canvas colours back.
 
-All three share one asyncio event loop. Nothing blocks the others.
+All four share one asyncio event loop. Nothing blocks the others.
 """
 import asyncio
 import time
+
+import qrcode
 
 from src.config import load_config
 from src.sensing.audio import AudioSensor
@@ -22,6 +26,8 @@ from src.sensing.heart_rate import HeartRateSensor
 from src.sensing.nodes import NodeSensor
 from src.intelligence import rules
 from src.intelligence.activation import ActivationTracker
+from src.intelligence import palette_jobs
+from src.intelligence import network
 from src.output.leds import LEDStrip
 from src.output.effects import registry
 from src.output.effects.colour_palette import PALETTES
@@ -186,6 +192,47 @@ async def led_loop(leds, num_pixels):
         await asyncio.sleep(0.05)  # 20 Hz
 
 
+PALETTE_BUILD_POLL_SECONDS = 0.5  # not animation-critical, unlike the 20Hz loops above
+
+
+async def palette_build_loop():
+    """Process contribute.html palette-build requests one at a time.
+
+    The actual work (decode photo, extract colours, maybe call Colormind)
+    runs via asyncio.to_thread so it can't stall sensor_loop/led_loop or
+    any connected browser's send_loop - see palette_jobs.py's own
+    docstring for why that matters. PALETTES is mutated in place, not
+    reassigned, since led_loop holds the same dict via its own `from
+    ...colour_palette import PALETTES` - reassigning here would silently
+    stop led_loop from ever seeing new palettes.
+    """
+    while True:
+        request = server.palette_job_request
+        if request is not None:
+            server.palette_job_request = None
+            server.latest["palette_job"] = {
+                "status": "processing", "name": request["name"],
+                "hex_colors": None, "error": None, "overwritten": False,
+            }
+            try:
+                result = await asyncio.to_thread(palette_jobs.run_palette_build, request)
+                PALETTES[request["name"]] = result["hex_colors"]
+                server.latest["palettes"] = list(PALETTES.keys())
+                server.latest["palette_data"] = dict(PALETTES)
+                server.latest["palette_job"] = {
+                    "status": "done", "name": request["name"],
+                    "hex_colors": result["hex_colors"], "error": None,
+                    "overwritten": result["overwritten"],
+                }
+            except Exception as exc:
+                server.latest["palette_job"] = {
+                    "status": "error", "name": request["name"],
+                    "hex_colors": None, "error": str(exc), "overwritten": False,
+                }
+
+        await asyncio.sleep(PALETTE_BUILD_POLL_SECONDS)
+
+
 async def main():
     config = load_config()
     sensors = build_sensors(config)
@@ -213,11 +260,24 @@ async def main():
     server.runtime_settings["activation_timeout_seconds"] = config["activation"]["timeout_seconds"]
     server.runtime_settings["smoothing_alpha"] = SMOOTHING_ALPHA
 
-    # Run all three concurrently. gather() waits for all to finish
+    # QR code linking straight to contribute.html, so people can scan it on
+    # the monitor instead of typing a URL. Best-effort: a machine with no
+    # network route at all (no interface up) can't be reached by anyone
+    # else anyway, so skipping the image there is fine, not fatal.
+    try:
+        lan_ip = network.get_lan_ip()
+        contribute_url = f"http://{lan_ip}:{config['server']['port']}/contribute.html"
+        qrcode.make(contribute_url).save("web/qr.png")
+        print(f"Contribute-a-palette QR code points to {contribute_url}")
+    except OSError as exc:
+        print(f"[main] couldn't generate QR code (no network route?): {exc}")
+
+    # Run all four concurrently. gather() waits for all to finish
     # (they won't — they're infinite loops).
     await asyncio.gather(
         sensor_loop(sensors, infer, activation_tracker),
         led_loop(leds, config["leds"]["num_pixels"]),
+        palette_build_loop(),
         server.start_server(host=config["server"]["host"], port=config["server"]["port"]),
     )
  

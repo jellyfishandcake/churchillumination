@@ -6,3 +6,4 @@ scipy
 mediapipe
 PyYAML
 paho-mqtt
+qrcode

@@ -39,6 +39,10 @@
     .stage-label small { display: block; color: #555; font-size: 0.72rem; margin-top: 0.15rem; }
     #admin-link { grid-column: 1 / -1; text-align: right; font-size: 0.85rem; }
     #admin-link a { color: #888; }
+    #qr-panel { display: flex; align-items: center; gap: 1rem; }
+    #qr-panel img { width: 90px; height: 90px; border-radius: 4px; background: #fff; padding: 4px; }
+    #qr-panel p { margin: 0; color: #aaa; font-size: 0.85rem; }
+    #qr-panel a { color: #4a9eff; }
   </style>
 </head>
 <body>
@@ -54,6 +58,11 @@
       <span class="metric-label">Palette</span>
       <select id="palette-select"></select>
     </div>
+  </div>
+
+  <div class="panel" id="qr-panel">
+    <img src="/qr.png" alt="Scan to build a palette from your phone">
+    <p>Scan to build a palette from your own photo — or open <a href="/contribute.html">contribute.html</a> directly.</p>
   </div>
 
   <div class="panel">
