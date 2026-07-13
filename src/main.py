@@ -27,12 +27,12 @@ from src.sensing.nodes import NodeSensor
 from src.intelligence import rules
 from src.intelligence.activation import ActivationTracker
 from src.intelligence import palette_jobs
-from src.intelligence import network
+from src.net import network
 from src.output.leds import LEDStrip
 from src.output.effects import registry
 from src.output.effects.colour_palette import PALETTES
 from src.output.effects.led_effects import apply_gamma
-from src.intelligence import server
+from src.net import server
 
 
 def build_sensors(config: dict) -> dict:

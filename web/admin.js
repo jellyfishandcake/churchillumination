@@ -1,6 +1,6 @@
 // admin.js — the passcode-gated terminal: sensor toggles, activation/
 // smoothing tuning, and a manual state override. Every control just sends
-// a `{"control": {...}}` message (src/intelligence/server.py's
+// a `{"control": {...}}` message (src/net/server.py's
 // _handle_control validates and applies it) and reflects back whatever
 // the server broadcasts, so multiple admin devices stay in sync.
 
