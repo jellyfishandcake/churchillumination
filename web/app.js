@@ -53,15 +53,24 @@ function syncPaletteOptions(palettes) {
   }
 }
 
+// Matches sketch.js's OFF_STATE_GREY: a plain <canvas> 2D context has no
+// notion of "draw this dim colour over a grey backdrop" the way p5's alpha
+// compositing does, so the grey blend has to be computed by hand per pixel
+// here instead. Display-only - the exact `frame` values are still what's
+// sent to the real LEDs via leds.render_pixels() in main.py; this only
+// changes how dim/off pixels are drawn on this webpage.
+const SWATCH_OFF_STATE_GREY = 226;
+
 function paintSwatchStrip(ctx, canvas, frame) {
   const n = frame.length;
   if (canvas.width !== n) canvas.width = n;
   const imageData = ctx.createImageData(n, 1);
   for (let i = 0; i < n; i++) {
     const [r, g, b] = frame[i];
-    imageData.data[i * 4] = r;
-    imageData.data[i * 4 + 1] = g;
-    imageData.data[i * 4 + 2] = b;
+    const alpha = Math.max(r, g, b) / 255; // brightness, doubles as blend weight
+    imageData.data[i * 4] = r * alpha + SWATCH_OFF_STATE_GREY * (1 - alpha);
+    imageData.data[i * 4 + 1] = g * alpha + SWATCH_OFF_STATE_GREY * (1 - alpha);
+    imageData.data[i * 4 + 2] = b * alpha + SWATCH_OFF_STATE_GREY * (1 - alpha);
     imageData.data[i * 4 + 3] = 255;
   }
   ctx.putImageData(imageData, 0, 0);
@@ -125,6 +134,7 @@ const wsHandle = window.connectWS((data) => {
   document.getElementById("activity-bar").style.width = `${state.activity_level * 100}%`;
   document.getElementById("mood-value").textContent = state.mood;
   document.getElementById("presence-value").textContent = state.presence_count;
+  document.getElementById("audio-scene-value").textContent = state.audio_scene ?? "—";
 }, status);
 
 function sendEffectChoice() {

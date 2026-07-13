@@ -23,7 +23,7 @@ from websockets.datastructures import Headers
 # Kept as a simple module-level dict so main.py can mutate it directly.
 # For a bigger project you'd use a queue; for now this is fine and clearer.
 latest = {
-    "state": {"activity_level": 0.0, "mood": "neutral", "presence_count": 0},
+    "state": {"activity_level": 0.0, "mood": "neutral", "presence_count": 0, "audio_scene": None},
     "sensor_health": {},
     # LED count + physical layout, so the browser can build the pixel map
     # itself instead of guessing a hardcoded LED count.

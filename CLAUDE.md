@@ -2,15 +2,9 @@
 
 ## What this is
 
-An 8-week Summer Bursary project (29 June – 23 Aug 2026) at Churchill College,
-Cambridge, building an AI/ML + LED-light interaction installation using
-Raspberry Pi. 
+An 8-week Summer Bursary project (29 June – 23 Aug 2026) at Churchill College, Cambridge, building an AI/ML + LED-light interaction installation using Raspberry Pi. 
 
-Goal: an interdisciplinary "human-computer-environment interaction" (HCE)
-platform — environmental sensors feed an ML/AI layer, which drives a
-generative light installation displayed in a college space. It should also
-leave behind a reusable curriculum for a Lent Term creative-computing
-bootcamp.
+Goal: an interdisciplinary "human-computer-environment interaction" (HCE) platform — environmental sensors feed an ML/AI layer, which drives a generative light installation displayed in a college space. It should also leave behind a reusable curriculum for a Lent Term creative-computing bootcamp.
 
 ## Task breakdown (from the proposal)
 
@@ -28,14 +22,6 @@ Workstation monitor allowing users to control and display key parameters + inter
 | II: Development | Weeks 2–5 | ML/AI codebase prototyping, Pi–LED integration, interfacing/performance guidelines |
 | III: Deployment | Weeks 6–8 | Final install in selected site, replication/reproduction guidelines for the Lent Term bootcamp |
 
-## Budget context
-
-- Raspberry Pi Starter kit (16GB) w/ screen — £500
-- LED lights kit w/ power supply — £500
-- LED housing kits/boxes — £500
-- (Hardware funded separately via a college interdisciplinary project fund;
-  this bursary funds the student's time/accommodation.)
-
 ## Architectural reference: MIT Illuminations
 
 We're using MIT's Illuminations project (github.com/sosolimited/MIT-Illuminations,
@@ -46,8 +32,7 @@ before writing sensor, driver, or sketch-runtime code.
 **Key decisions already made based on that review:**
 
 - **Runtime:** Raspberry Pi, headless. No Electron.
-- **LED driver:** `rpi_ws281x` (Python) driving NeoPixels directly via GPIO —
-  no Arduino/serial middleman, no KiNET.
+- **LED driver:** use apa102 led strips
 - **Sketch language:** keep p5.js — it's the pedagogical core for the
   bootcamp. Use **p5 instance mode**, not MIT's global-namespace `window.eval`
   approach.
@@ -85,17 +70,15 @@ widget schema, the Arduino firmware, etc.), **preserve their MIT license
 header and credit "Sosolimited in collaboration with MIT"**. This applies to
 anything that ends up in bursary deliverables shown to admissions/college.
 
-## Open questions to resolve early (Phase I)
+## Open questions + decisions
 
 - Where exactly does ML sit: sensor-side (Pi runs a small classifier on
   audio+motion → "busy/quiet/festive") or renderer-side? Sensor-side is more
   realistic for the timeline.
 - What does "AI-driven algorithms to improve sensor data" concretely mean?
-  Pick one and defend it: denoising a mic signal into a stable activity
-  level, audio scene classification, or generative visuals from sensor
-  state. Don't leave this vague past Week 3.
-- Confirm installation site and get a pixel map (LED count + physical
-  layout) before writing renderer code.
+Make use of AI models existing, no generative AI for LED, keep it simple for first installation and can add features later / upgrade
+- Confirm installation site and get a pixel map (LED count + physical layout) before writing renderer code.
+It will be LED laid in strips on ground onto walls 
 
 ## Coding conventions
 

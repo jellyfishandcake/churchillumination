@@ -18,6 +18,12 @@
 const sketch = (p) => {
   const W = 1200;
   const H = 100;
+  // What an unlit physical strip actually looks like against its housing —
+  // light grey, not black. Drawn as the canvas's base every frame; each
+  // LED's colour is then composited on top at an alpha proportional to its
+  // own brightness, so dim/off pixels show this grey instead of a fully
+  // opaque dark rect.
+  const OFF_STATE_GREY = 226;
   let sketchCanvas;
   let effect = null;
   let currentPaletteName = null;
@@ -43,10 +49,13 @@ const sketch = (p) => {
     const intensity = window.appState?.activity ?? 0;
     const frame = window.applyGamma(effect.step(intensity));
 
+    p.background(OFF_STATE_GREY);
+
     const bandWidth = W / frame.length;
     for (let i = 0; i < frame.length; i++) {
       const [r, g, b] = frame[i];
-      p.fill(r, g, b);
+      const brightness = Math.max(r, g, b); // 0-255, doubles as this pixel's alpha
+      p.fill(r, g, b, brightness);
       p.rect(i * bandWidth, 0, bandWidth, H);
     }
 
