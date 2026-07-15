@@ -11,9 +11,25 @@ DEFAULTS = {
     # passcode below: fine for a closed local network, not a real security
     # boundary if ever exposed further than that.
     "server": {"host": "0.0.0.0", "port": 8000},
-    "leds": {"num_pixels": 60, "layout": "strip"}, # change this number in config for default number of pixels to drive
+    "leds": {
+        "num_pixels": 60,  # change this number in config for default number of pixels to drive
+        "layout": "strip",
+        # Physical sections of the strip - each runs its own effect+palette,
+        # driven by its own sensor signal (a dot-path into server.latest,
+        # resolved each tick by main.py's _resolve_source). `pixels` across
+        # all zones should sum to num_pixels; led_loop pads/clamps the last
+        # zone if they don't, rather than crashing over a config typo.
+        "zones": [
+            {"name": "ambient", "pixels": 48, "effect": "organic_wave", "palette": "winter", "source": "state.activity_level"},
+            {"name": "heart_rate", "pixels": 6, "effect": "organic_twinkle", "palette": "festive", "source": "heart_rate.engaged"},
+            {"name": "movement", "pixels": 6, "effect": "organic_comet", "palette": "autumn", "source": "interactions.motion_burst"},
+        ],
+    },
     "activation": {"timeout_seconds": 300.0},
-    "effects": {"default_effect": "organic_wave", "default_palette": "winter"},
+    # Isolated interaction signals (heart-rate contact, handheld-stick
+    # shake) - short timeouts since these are direct momentary interactions,
+    # not ambient presence. See ActivationTracker/main.py's sensor_loop.
+    "interaction": {"hr_contact_timeout_seconds": 5.0, "motion_burst_timeout_seconds": 8.0},
     # Shared passcode gating admin-only terminal controls (sensor toggles,
     # activation/smoothing tuning, manual state override). CHANGE THIS in
     # config.yaml before any real use - it's sent in plaintext over the
@@ -22,9 +38,10 @@ DEFAULTS = {
     "sensors": {
         "audio": {"enabled": True},
         "motion": {"enabled": True},
-        "sense_hat": {"enabled": True},
+        "multisensor": {"enabled": True},
         "pir": {"enabled": True, "gpio_pin": 4},
         "heart_rate": {"enabled": True},
+        "accel_stick": {"enabled": True, "serial_port": "/dev/ttyUSB0", "baud_rate": 115200},
         "nodes": {
             "enabled": True,
             "mqtt_host": "localhost",

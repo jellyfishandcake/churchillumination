@@ -14,17 +14,40 @@ server:
 leds:
   num_pixels: 60
   layout: strip   # strip|grid|ring — only "strip" is implemented so far (see web/pixelMap.js)
+  # Physical sections of the strip, e.g. ~1m each - each runs its own
+  # effect+palette (see src/output/effects/), changeable at runtime from
+  # the dashboard's per-zone picker, driven by its own sensor signal (a
+  # dot-path resolved against server.latest each tick - see main.py's
+  # _resolve_source). `pixels` across all zones should sum to num_pixels;
+  # led_loop pads/clamps the last zone if they don't, rather than crashing.
+  zones:
+    - name: ambient
+      pixels: 48
+      effect: organic_wave       # organic_wave | organic_comet | organic_twinkle
+      palette: winter            # any key in colour_palette.PALETTES / palettes.json
+      source: state.activity_level
+    - name: heart_rate
+      pixels: 6
+      effect: organic_twinkle
+      palette: festive
+      source: heart_rate.engaged        # bool -> 1.0/0.0
+    - name: movement
+      pixels: 6
+      effect: organic_comet
+      palette: autumn
+      source: interactions.motion_burst # bool -> 1.0/0.0
 
 # How long (in seconds) the installation stays "activated" after the last
 # presence detection before falling back to idle. See src/intelligence/activation.py.
 activation:
   timeout_seconds: 300.0
 
-# Which system effect + palette (see src/output/effects/) is live on start.
-# Both are changeable at runtime from the terminal's effect picker.
-effects:
-  default_effect: organic_wave   # organic_wave | organic_comet | organic_twinkle
-  default_palette: winter        # any key in colour_palette.PALETTES / palettes.json
+# Isolated interaction signals, each debounced the same way "activated"
+# above is, but kept separate from it and from mood/activity_level - see
+# main.py's sensor_loop and CLAUDE.md's "isolated regions" design.
+interaction:
+  hr_contact_timeout_seconds: 5.0     # how long the heart-rate zone stays "engaged" after the last finger contact
+  motion_burst_timeout_seconds: 8.0   # how long a handheld-stick shake counts as a motion burst
 
 # Shared passcode gating admin-only terminal controls. CHANGE THIS — sent in
 # plaintext over the local websocket, a low-security gate for a private LAN
@@ -41,10 +64,11 @@ sensors:
   motion:
     enabled: true
 
-  # Raspberry Pi Sense HAT v2 — accelerometer/gyro/magnetometer +
-  # temperature/humidity/pressure. Falls back to a mock if the sense_hat
-  # library or the board isn't present (e.g. on a dev laptop).
-  sense_hat:
+  # Pimoroni Multi-Sensor Stick (BME280 + LTR559), wired over a longer I2C
+  # cable so it can sit away from the Pi and read true room conditions
+  # instead of the Pi's own heat/vibration. Falls back to a mock if the
+  # pimoroni-bme280/ltr559 libraries or the board aren't present.
+  multisensor:
     enabled: true
 
   # Mini PIR motion sensor on GPIO - the *central* one only. The 2
@@ -54,9 +78,19 @@ sensors:
     enabled: true
     gpio_pin: 4
 
-  # MAX30102 heart-rate/SpO2 sensor over I2C. Falls back to a mock off the Pi.
+  # DFRobot Gravity/Fermion MAX30102 heart-rate/SpO2 sensor over I2C - the
+  # module computes HR/SpO2 on its own onboard MCU. Falls back to a mock
+  # off the Pi.
   heart_rate:
     enabled: true
+
+  # Handheld M5Stack ESP32S3 accelerometer stick, wired to the Pi over
+  # USB-serial (a physical tether, not WiFi/MQTT - simpler, and keeps it
+  # from walking off). Falls back to a mock if the port isn't present.
+  accel_stick:
+    enabled: true
+    serial_port: /dev/ttyUSB0   # e.g. COM3 on Windows dev machines
+    baud_rate: 115200
 
   # 2 Seeed XIAO ESP32S3 Sense nodes (each with mic + MLX90640 thermal
   # camera + PIR), publishing readings over MQTT. Falls back to mock

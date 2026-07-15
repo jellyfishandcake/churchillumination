@@ -4,15 +4,16 @@
 # these falls back to a mock automatically if it isn't installed, so the
 # main pipeline runs fine on a dev laptop without any of this.
 
-sense-hat   # Sense HAT v2 — may also need `sudo apt install sense-hat`
-            # (its RTIMULib dependency isn't always reliable via pip alone)
 gpiozero    # mini PIR sensor
 lgpio       # gpiozero pin-factory backend required on Raspberry Pi 5 —
             # RPi.GPIO (gpiozero's default) does not support the Pi 5's
             # GPIO chip
-smbus2      # I2C bus access, used by the hand-rolled MAX30102 driver
-            # (src/sensing/heart_rate.py) — no dedicated pip package exists
-            # for the MAX30102
+smbus2      # I2C bus access, used by both the hand-rolled MAX30102 driver
+            # (src/sensing/heart_rate.py — no dedicated pip package exists
+            # for the DFRobot Gravity/Fermion module) and multisensor.py
+pimoroni-bme280   # Pimoroni Multi-Sensor Stick (PIM745) — temperature/
+                  # humidity/pressure; import name is `bme280`
+ltr559            # Pimoroni Multi-Sensor Stick (PIM745) — light/proximity
 
 # MLX90640 (central thermal motion camera, src/sensing/motion.py) is
 # intentionally NOT listed here: Pimoroni's MLX90640 Python binding isn't

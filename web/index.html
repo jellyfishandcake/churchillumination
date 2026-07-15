@@ -30,21 +30,18 @@
     #qr-panel img { width: 90px; height: 90px; border-radius: 4px; background: #fff; padding: 4px; border: 1px solid var(--hairline); }
     #qr-panel p { margin: 0; color: var(--muted); font-size: 0.85rem; }
     #qr-panel a { color: var(--accent); }
+    #zones-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; }
+    .zone-card { background: var(--bg); border: 1px solid var(--hairline); border-radius: 6px; padding: 1rem; }
+    .zone-card h3 { margin: 0 0 0.6rem; font-family: var(--font-label); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    .zone-card .source-readout { font-family: var(--font-label); color: var(--muted); font-size: 0.78rem; margin-top: 0.5rem; }
   </style>
 </head>
 <body>
   <h1>Creative Computing <span id="status">connecting…</span></h1>
 
-  <div class="panel">
-    <h2>Effect</h2>
-    <div class="metric">
-      <span class="metric-label">Pattern</span>
-      <select id="effect-select"></select>
-    </div>
-    <div class="metric">
-      <span class="metric-label">Palette</span>
-      <select id="palette-select"></select>
-    </div>
+  <div class="panel" style="grid-column: 1 / -1;">
+    <h2>Zones</h2>
+    <div id="zones-grid"></div>
   </div>
 
   <div class="panel" id="qr-panel">
@@ -55,15 +52,10 @@
   <div class="panel">
     <h2>Pipeline</h2>
     <div class="stage-label">
-      1. Sampled from the sketch canvas
-      <small>What the p5 sketch would send, if it were driving the LEDs (it currently isn't — see stage 2)</small>
+      Sampled from the sketch canvas
+      <small>What the p5 sketch would send, if it were driving the LEDs (it currently isn't — each zone's actual output is shown on its own card above)</small>
     </div>
     <canvas id="sampled-frame-canvas" class="swatch-strip" width="60" height="1"></canvas>
-    <div class="stage-label" style="margin-top: 1rem;">
-      2. LED output — actual, from the selected effect
-      <small>This is what really reaches the strip right now</small>
-    </div>
-    <canvas id="led-frame-canvas" class="swatch-strip" width="60" height="1"></canvas>
   </div>
 
   <div class="panel">

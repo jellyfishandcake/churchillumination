@@ -15,14 +15,16 @@ All four share one asyncio event loop. Nothing blocks the others.
 import asyncio
 import time
 
+import numpy as np
 import qrcode
 
 from src.config import load_config
 from src.sensing.audio import AudioSensor
 from src.sensing.motion import MotionSensor
-from src.sensing.sense_hat import SenseHatSensor
+from src.sensing.multisensor import MultisensorStick
 from src.sensing.pir import PIRSensor
 from src.sensing.heart_rate import HeartRateSensor
+from src.sensing.accel_stick import AccelStickSensor
 from src.sensing.nodes import NodeSensor
 from src.intelligence import rules
 from src.intelligence.activation import ActivationTracker
@@ -54,12 +56,18 @@ def build_sensors(config: dict) -> dict:
         sensors["audio"] = AudioSensor()
     if sensors_config["motion"]["enabled"]:
         sensors["motion"] = MotionSensor()
-    if sensors_config["sense_hat"]["enabled"]:
-        sensors["sense_hat"] = SenseHatSensor()
+    if sensors_config["multisensor"]["enabled"]:
+        sensors["multisensor"] = MultisensorStick()
     if sensors_config["pir"]["enabled"]:
         sensors["pir"] = PIRSensor(gpio_pin=sensors_config["pir"]["gpio_pin"])
     if sensors_config["heart_rate"]["enabled"]:
         sensors["heart_rate"] = HeartRateSensor()
+    if sensors_config["accel_stick"]["enabled"]:
+        accel_config = sensors_config["accel_stick"]
+        sensors["accel_stick"] = AccelStickSensor(
+            serial_port=accel_config["serial_port"],
+            baud_rate=accel_config["baud_rate"],
+        )
     if sensors_config["nodes"]["enabled"]:
         nodes_config = sensors_config["nodes"]
         sensors["nodes"] = NodeSensor(
@@ -78,6 +86,12 @@ def build_sensors(config: dict) -> dict:
 # else in rules.py remembers what a reading was a moment ago.
 SMOOTHING_ALPHA = 0.15
 
+# Raw acceleration above this (from the handheld accel_stick) counts as a
+# "shake" for motion_tracker below - same idea as SMOOTHING_ALPHA, a plain
+# module constant rather than config, tune by feel once real hardware is in
+# hand.
+MOTION_BURST_THRESHOLD = 0.15
+
 
 def _smooth_readings(previous: dict, current: dict, alpha: float) -> dict:
     """EMA-smooth each numeric reading against its previous value. Non-numeric
@@ -93,7 +107,7 @@ def _smooth_readings(previous: dict, current: dict, alpha: float) -> dict:
     return smoothed
 
 
-async def sensor_loop(sensors, infer, activation_tracker):
+async def sensor_loop(sensors, infer, activation_tracker, hr_tracker, motion_tracker):
     """Read sensors, smooth them, compute state, publish to shared dict. 20 Hz.
 
     Each sensor now handles its own hardware failures internally — it falls
@@ -107,6 +121,12 @@ async def sensor_loop(sensors, infer, activation_tracker):
     activation_tracker's timeout, the smoothing alpha, and an optional
     state override are all read live from server.runtime_settings each
     tick, so the admin terminal's controls take effect without a restart.
+
+    hr_tracker/motion_tracker are separate, isolated ActivationTracker
+    instances (heart-rate contact, handheld-stick shake) - deliberately not
+    folded into activation_tracker's ambient "activated" or into
+    infer_state, since these are direct per-sensor interaction signals for
+    their own dedicated LED regions, not ambient presence.
     """
     smoothed = {}
     while True:
@@ -132,7 +152,14 @@ async def sensor_loop(sensors, infer, activation_tracker):
             for node_reading in raw.get("nodes", {}).values()
         )
         presence = central_presence or node_presence
-        raw["activated"] = activation_tracker.update(presence, time.time())
+        now = time.time()
+        raw["activated"] = activation_tracker.update(presence, now)
+
+        # Isolated interaction signals - fed from raw, same reasoning as
+        # "activated" above: a debounce needs the real, un-smoothed edge to
+        # trigger on, not an EMA-lagged one.
+        hr_engaged = hr_tracker.update(raw.get("pulse_detected", False), now)
+        motion_burst = motion_tracker.update(raw.get("acceleration", 0.0) > MOTION_BURST_THRESHOLD, now)
 
         smoothed = _smooth_readings(smoothed, raw, alpha)
 
@@ -150,41 +177,101 @@ async def sensor_loop(sensors, infer, activation_tracker):
         server.latest["sensor_health"] = {
             name: {"healthy": s.healthy, "last_error": s.last_error} for name, s in sensors.items()
         }
+        # bpm smoothed for a steadier bulb pulse rate; pulse_detected itself
+        # stays raw going into hr_tracker above, same as PIR presence does.
+        server.latest["heart_rate"] = {"bpm": smoothed.get("heart_rate"), "engaged": hr_engaged}
+        server.latest["interactions"] = {"motion_burst": motion_burst}
 
         await asyncio.sleep(0.05)  # 20 Hz
 
 
-async def led_loop(leds, num_pixels):
-    """Step the currently-selected system effect and push it to the LED
-    strip. 20 Hz.
+def _resolve_source(latest: dict, path: str) -> float:
+    """Walk a dot-path (e.g. "heart_rate.engaged") into server.latest and
+    return a 0..1 intensity. Missing path -> 0.0 (fail soft, e.g. a zone
+    configured before its source sensor's first tick has landed); bool ->
+    1.0/0.0; anything else -> clamped to 0..1. Doesn't validate that the
+    path "makes sense" (e.g. bpm isn't 0..1) - the zone config is trusted
+    the same way config.py's _deep_merge trusts config.yaml."""
+    value = latest
+    for part in path.split("."):
+        if not isinstance(value, dict) or part not in value:
+            return 0.0
+        value = value[part]
+    if isinstance(value, bool):
+        return 1.0 if value else 0.0
+    if isinstance(value, (int, float)):
+        return min(max(float(value), 0.0), 1.0)
+    return 0.0
 
-    Effect/palette selection lives in server.runtime_settings (set by the
-    terminal's picker). The effect instance is only rebuilt when the
-    selection actually changes — effect objects hold animation state
-    (self.t, self.trail, ...) that must survive across ticks, so rebuilding
-    every tick would e.g. stop the comet's trail from ever accumulating.
+
+def _zone_pixel_ranges(zones: list, num_pixels: int) -> list:
+    """[(start, end), ...] per zone, in config order. If the configured
+    pixel counts don't sum to num_pixels, pad/clamp the last zone so the
+    strip is always exactly filled - a config typo shouldn't crash the
+    installation."""
+    ranges = []
+    start = 0
+    for i, zone in enumerate(zones):
+        is_last = i == len(zones) - 1
+        end = num_pixels if is_last else min(num_pixels, start + zone["pixels"])
+        ranges.append((start, end))
+        start = end
+    if start != num_pixels:
+        print(f"[led_loop] zone pixel counts sum to {start}, not num_pixels={num_pixels} — last zone padded/clamped to fit")
+    return ranges
+
+
+async def led_loop(leds, num_pixels, zones_config):
+    """Step each zone's selected effect and push the combined frame to the
+    LED strip. 20 Hz.
+
+    zones_config (config["leds"]["zones"]) splits the physical strip into
+    named sections, each running its own effect+palette
+    (server.runtime_settings["zones"][name], set by the per-zone picker on
+    the dashboard) at an intensity pulled from its own sensor signal
+    (zone["source"], a dot-path resolved by _resolve_source each tick) -
+    not one global activity_level shared by the whole strip. Per-zone
+    effect instances are only rebuilt when that zone's (effect, palette)
+    pair actually changes - same reasoning as before: effect objects hold
+    animation state (self.t, self.trail, ...) that must survive across
+    ticks, so rebuilding every tick would e.g. stop a comet's trail from
+    ever accumulating.
+
+    All zone frames are concatenated into one array before gamma
+    correction + a single render_pixels call, since it's still one
+    physical strip either way.
 
     The browser's canvas-sampling pipeline (app.js/sketch.js/pixelMap.js,
     still sending {"pixels": [...]}) keeps running but is intentionally
     unconsumed here — kept for its own visual/demo value and as groundwork
     for a future user-sketch-upload feature, not because it's a bug.
     """
-    current_effect_name = None
-    current_palette_name = None
-    effect = None
+    ranges = _zone_pixel_ranges(zones_config, num_pixels)
+
+    # Per-zone: (current_effect_name, current_palette_name, effect_instance)
+    zone_state = {zone["name"]: (None, None, None) for zone in zones_config}
 
     while True:
-        effect_name = server.runtime_settings["effect"] or registry.DEFAULT_EFFECT
-        palette_name = server.runtime_settings["palette"] or registry.DEFAULT_PALETTE
+        frames = []
+        for zone, (start, end) in zip(zones_config, ranges):
+            name = zone["name"]
+            n = end - start
+            settings = server.runtime_settings["zones"].get(name, {})
+            effect_name = settings.get("effect") or zone["effect"]
+            palette_name = settings.get("palette") or zone["palette"]
 
-        if (effect_name, palette_name) != (current_effect_name, current_palette_name):
-            effect_class = registry.EFFECTS.get(effect_name, registry.EFFECTS[registry.DEFAULT_EFFECT])
-            palette = PALETTES.get(palette_name, PALETTES[registry.DEFAULT_PALETTE])
-            effect = effect_class(num_pixels, palette)
-            current_effect_name, current_palette_name = effect_name, palette_name
+            current_effect_name, current_palette_name, effect = zone_state[name]
+            if (effect_name, palette_name) != (current_effect_name, current_palette_name):
+                effect_class = registry.EFFECTS.get(effect_name, registry.EFFECTS[registry.DEFAULT_EFFECT])
+                palette = PALETTES.get(palette_name, PALETTES[registry.DEFAULT_PALETTE])
+                effect = effect_class(n, palette)
+                zone_state[name] = (effect_name, palette_name, effect)
 
-        intensity = server.latest["state"]["activity_level"]
-        frame = apply_gamma(effect.step(intensity)).tolist()  # numpy -> plain ints, for JSON
+            intensity = _resolve_source(server.latest, zone["source"])
+            frames.append(effect.step(intensity))
+
+        full_frame = np.concatenate(frames, axis=0) if frames else np.zeros((0, 3))
+        frame = apply_gamma(full_frame).tolist()  # numpy -> plain ints, for JSON
 
         leds.render_pixels(frame)
         server.latest["led_frame"] = frame
@@ -239,10 +326,17 @@ async def main():
     leds = LEDStrip(num_pixels=config["leds"]["num_pixels"])
     infer = rules.infer_state
     activation_tracker = ActivationTracker(timeout=config["activation"]["timeout_seconds"])
+    hr_tracker = ActivationTracker(timeout=config["interaction"]["hr_contact_timeout_seconds"])
+    motion_tracker = ActivationTracker(timeout=config["interaction"]["motion_burst_timeout_seconds"])
 
     server.latest["leds"] = {
         "num_pixels": config["leds"]["num_pixels"],
         "layout": config["leds"]["layout"],
+        # Name + pixel count + source per zone, so the browser can build one
+        # card per zone, slice led_frame into per-zone swatches, and show a
+        # live readout of what's driving each zone - without duplicating
+        # the pixel-range/source-resolution logic led_loop already does.
+        "zones": [{"name": z["name"], "pixels": z["pixels"], "source": z["source"]} for z in config["leds"]["zones"]],
     }
     server.latest["effects"] = list(registry.EFFECTS.keys())
     server.latest["palettes"] = list(PALETTES.keys())
@@ -252,8 +346,11 @@ async def main():
     server.latest["palette_data"] = dict(PALETTES)
 
     server.admin_passcode = config["admin"]["passcode"]
-    server.runtime_settings["effect"] = config["effects"]["default_effect"]
-    server.runtime_settings["palette"] = config["effects"]["default_palette"]
+    # Seeded from each zone's own default effect+palette - live-swappable
+    # per zone from here on via the "set_zone_effect" control action.
+    server.runtime_settings["zones"] = {
+        z["name"]: {"effect": z["effect"], "palette": z["palette"]} for z in config["leds"]["zones"]
+    }
     server.runtime_settings["sensors_enabled"] = {
         name: cfg["enabled"] for name, cfg in config["sensors"].items()
     }
@@ -275,8 +372,8 @@ async def main():
     # Run all four concurrently. gather() waits for all to finish
     # (they won't — they're infinite loops).
     await asyncio.gather(
-        sensor_loop(sensors, infer, activation_tracker),
-        led_loop(leds, config["leds"]["num_pixels"]),
+        sensor_loop(sensors, infer, activation_tracker, hr_tracker, motion_tracker),
+        led_loop(leds, config["leds"]["num_pixels"], config["leds"]["zones"]),
         palette_build_loop(),
         server.start_server(host=config["server"]["host"], port=config["server"]["port"]),
     )

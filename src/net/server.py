@@ -25,9 +25,17 @@ from websockets.datastructures import Headers
 latest = {
     "state": {"activity_level": 0.0, "mood": "neutral", "presence_count": 0, "audio_scene": None},
     "sensor_health": {},
+    # Isolated interaction signals - deliberately not part of "state" above,
+    # since they drive their own dedicated LED regions rather than ambient
+    # mood/activity. See main.py's sensor_loop/led_loop.
+    "heart_rate": {"bpm": None, "engaged": False},
+    "interactions": {"motion_burst": False},
     # LED count + physical layout, so the browser can build the pixel map
-    # itself instead of guessing a hardcoded LED count.
-    "leds": {"num_pixels": 60, "layout": "strip"},
+    # itself instead of guessing a hardcoded LED count. "zones" (name +
+    # pixel count per section) is filled in properly by main.py's main()
+    # once config is loaded - empty here is just a structurally-valid
+    # placeholder for before that happens.
+    "leds": {"num_pixels": 60, "layout": "strip", "zones": []},
     # Progress/result of the most recent contribute.html palette build, so
     # that page can just read this every broadcast tick instead of needing
     # a dedicated reply message. See palette_job_request below and
@@ -54,8 +62,10 @@ clients = set()
 # these are just structurally-valid placeholders so the server can run
 # before that happens.
 runtime_settings = {
-    "effect": None,
-    "palette": None,
+    # Per-zone effect+palette choice, keyed by zone name (e.g. "ambient",
+    # "heart_rate") - see main.py's led_loop. Replaces the old single
+    # global "effect"/"palette" keys now that the strip is sectioned.
+    "zones": {},
     "sensors_enabled": {},
     "activation_timeout_seconds": None,
     "smoothing_alpha": None,
@@ -69,9 +79,10 @@ admin_passcode = None
 admin_clients = set()
 
 # Actions only an authenticated admin connection may perform. "admin_login",
-# "set_effect", and "build_palette" are intentionally absent - login is how
-# you become admin, and the effect/palette picker plus the contribute.html
-# palette builder are the controls public users (anyone on the LAN) get.
+# "set_zone_effect", and "build_palette" are intentionally absent - login is
+# how you become admin, and the per-zone effect/palette pickers plus the
+# contribute.html palette builder are the controls public users (anyone on
+# the LAN) get.
 ADMIN_ACTIONS = {
     "toggle_sensor",
     "set_activation_timeout",
@@ -153,12 +164,16 @@ async def _handle_control(websocket, payload: dict) -> None:
         print(f"[server] rejected admin action {action!r} from unauthenticated client")
         return
 
-    if action == "set_effect":
+    if action == "set_zone_effect":
+        zone = payload.get("zone")
         effect = payload.get("effect")
         palette = payload.get("palette")
-        if isinstance(effect, str) and isinstance(palette, str):
-            runtime_settings["effect"] = effect
-            runtime_settings["palette"] = palette
+        if isinstance(zone, str) and isinstance(effect, str) and isinstance(palette, str):
+            # No check that `zone` is a real zone name here - see this
+            # function's docstring on why domain validation belongs to
+            # main.py's led_loop, which already ignores settings for zones
+            # it doesn't have.
+            runtime_settings["zones"][zone] = {"effect": effect, "palette": palette}
 
     elif action == "toggle_sensor":
         sensor = payload.get("sensor")

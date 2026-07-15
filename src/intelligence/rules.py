@@ -21,6 +21,7 @@ from .audio_scene_categories import AUDIO_SCENE_CATEGORY
 # unaffected either way; audio_scene only refines the descriptive mood
 # label shown on the dashboard.
 LIVELY_SCENES = {"Cheering", "Applause", "Laughter", "Crowd", "Shout", "Children shouting", "Chatter"}
+# handpicked lively scenes we want to override the default mood interpretation
 
 def infer_state(readings: dict) -> EnvironmentState:
     loudness = readings.get("loudness", 0.0)

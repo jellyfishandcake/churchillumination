@@ -1,7 +1,7 @@
 // app.js — connects to the Python server, keeps the public dashboard alive,
 // exposes the current sensor/state values as `window.sensors` and
 // `window.appState` so the p5 sketch can read them, and drives the
-// effect/palette picker + LED-output swatch-strip visualizer.
+// per-zone effect/palette pickers + LED-output swatch strips.
 
 // These are the globals the sketch will see. Live-updated.
 window.sensors = {
@@ -14,10 +14,7 @@ window.appState = {
 };
 
 const status = document.getElementById("status");
-const effectSelect = document.getElementById("effect-select");
-const paletteSelect = document.getElementById("palette-select");
-const ledFrameCanvas = document.getElementById("led-frame-canvas");
-const ledFrameCtx = ledFrameCanvas.getContext("2d");
+const zonesGrid = document.getElementById("zones-grid");
 const sampledFrameCanvas = document.getElementById("sampled-frame-canvas");
 const sampledFrameCtx = sampledFrameCanvas.getContext("2d");
 
@@ -25,31 +22,25 @@ const sampledFrameCtx = sampledFrameCanvas.getContext("2d");
 // created its canvas. Left null until both are ready. Also exposed as
 // window.pixelMap so sketch.js can draw the sample-point overlay.
 let pixelMap = null;
-let effectsPopulated = false;
 
-function populateEffects(effects) {
-  for (const name of effects) {
+// Populated once from the server's global effects/palettes lists, reused
+// to build every zone card's <select> options - same list of choices for
+// every zone, just applied per zone instead of once globally.
+let effectsList = null;
+let palettesList = null;
+
+// One entry per zone, keyed by zone name: { zone, card, effectSelect,
+// paletteSelect, canvas, ctx, sourceReadout }. Built once when leds.zones
+// first arrives (zone count/pixel layout is fixed for the process's
+// lifetime - only which effect/palette each zone is running changes).
+const zoneCards = {};
+
+function buildSelectOptions(select, names) {
+  for (const name of names) {
     const opt = document.createElement("option");
     opt.value = name;
     opt.textContent = name.replace(/_/g, " ");
-    effectSelect.appendChild(opt);
-  }
-  effectsPopulated = true;
-}
-
-// Palettes, unlike effects, can appear at any time - contribute.html (or
-// the CLI tools) can add one while this page is already open. Diff-append
-// any name not already an <option>, every message, instead of populating
-// once - this is what actually makes a freshly-built palette show up here
-// without a manual refresh.
-function syncPaletteOptions(palettes) {
-  const existing = new Set(Array.from(paletteSelect.options).map((o) => o.value));
-  for (const name of palettes) {
-    if (existing.has(name)) continue;
-    const opt = document.createElement("option");
-    opt.value = name;
-    opt.textContent = name;
-    paletteSelect.appendChild(opt);
+    select.appendChild(opt);
   }
 }
 
@@ -76,8 +67,93 @@ function paintSwatchStrip(ctx, canvas, frame) {
   ctx.putImageData(imageData, 0, 0);
 }
 
+// Mirrors main.py's _resolve_source - same dot-path walk into the same
+// payload the server already sends every tick, so the dashboard can show
+// "why" a zone looks the way it does without the server needing to publish
+// a separately-computed value.
+function resolveSource(data, path) {
+  let value = data;
+  for (const part of path.split(".")) {
+    if (typeof value !== "object" || value === null || !(part in value)) return 0.0;
+    value = value[part];
+  }
+  if (typeof value === "boolean") return value ? 1.0 : 0.0;
+  if (typeof value === "number") return Math.min(Math.max(value, 0.0), 1.0);
+  return 0.0;
+}
+
+function buildZoneCards(zones) {
+  zonesGrid.innerHTML = "";
+  for (const zone of zones) {
+    const card = document.createElement("div");
+    card.className = "zone-card";
+
+    const heading = document.createElement("h3");
+    heading.textContent = `${zone.name} (${zone.pixels}px)`;
+    card.appendChild(heading);
+
+    const effectField = document.createElement("div");
+    effectField.className = "field";
+    const effectLabel = document.createElement("span");
+    effectLabel.className = "field-label";
+    effectLabel.textContent = "Pattern";
+    const effectSelect = document.createElement("select");
+    buildSelectOptions(effectSelect, effectsList);
+    effectField.append(effectLabel, effectSelect);
+    card.appendChild(effectField);
+
+    const paletteField = document.createElement("div");
+    paletteField.className = "field";
+    const paletteLabel = document.createElement("span");
+    paletteLabel.className = "field-label";
+    paletteLabel.textContent = "Palette";
+    const paletteSelect = document.createElement("select");
+    buildSelectOptions(paletteSelect, palettesList);
+    paletteField.append(paletteLabel, paletteSelect);
+    card.appendChild(paletteField);
+
+    const canvas = document.createElement("canvas");
+    canvas.className = "swatch-strip";
+    canvas.width = zone.pixels;
+    canvas.height = 1;
+    card.appendChild(canvas);
+
+    const sourceReadout = document.createElement("div");
+    sourceReadout.className = "source-readout";
+    card.appendChild(sourceReadout);
+
+    zonesGrid.appendChild(card);
+
+    const sendChoice = () => {
+      wsHandle.send({
+        control: {
+          action: "set_zone_effect",
+          zone: zone.name,
+          effect: effectSelect.value,
+          palette: paletteSelect.value,
+        },
+      });
+    };
+    effectSelect.addEventListener("change", sendChoice);
+    paletteSelect.addEventListener("change", sendChoice);
+
+    zoneCards[zone.name] = {
+      zone, card, effectSelect, paletteSelect, canvas,
+      ctx: canvas.getContext("2d"),
+      sourceReadout,
+    };
+  }
+}
+
 const wsHandle = window.connectWS((data) => {
   const { state, leds, effects, palettes, runtime_settings, led_frame, palette_data } = data;
+
+  // Always refresh (not just once) - a palette can be added at any time via
+  // contribute.html or the CLI tools, and sketch.js needs the real colours
+  // for it the moment it exists, not just at page load.
+  if (palette_data) {
+    window.paletteData = palette_data;
+  }
 
   if (!pixelMap && leds && window.buildPixelMap && window.sketchDimensions) {
     pixelMap = window.buildPixelMap(
@@ -90,37 +166,52 @@ const wsHandle = window.connectWS((data) => {
     window.numPixels = leds.num_pixels; // for sketch.js's own effect instance
   }
 
-  // Always refresh (not just once) - a palette can be added at any time via
-  // contribute.html or the CLI tools, and sketch.js needs the real colours
-  // for it the moment it exists, not just at page load.
-  if (palette_data) {
-    window.paletteData = palette_data;
+  if (!effectsList && effects) effectsList = effects;
+  if (!palettesList && palettes) palettesList = palettes;
+
+  if (Object.keys(zoneCards).length === 0 && leds?.zones?.length && effectsList && palettesList) {
+    buildZoneCards(leds.zones);
   }
 
-  if (!effectsPopulated && effects) {
-    populateEffects(effects);
-  }
+  // Palettes, unlike effects, can appear at any time - contribute.html (or
+  // the CLI tools) can add one while this page is already open. Diff-append
+  // any name not already an <option> to every zone's palette picker, every
+  // message, instead of populating once - this is what actually makes a
+  // freshly-built palette show up here without a manual refresh.
   if (palettes) {
-    syncPaletteOptions(palettes);
+    for (const name in zoneCards) {
+      const { paletteSelect } = zoneCards[name];
+      const existing = new Set(Array.from(paletteSelect.options).map((o) => o.value));
+      const missing = palettes.filter((p) => !existing.has(p));
+      if (missing.length) buildSelectOptions(paletteSelect, missing);
+    }
   }
-  if (effectsPopulated && runtime_settings) {
-    effectSelect.value = runtime_settings.effect;
-  }
+
   if (runtime_settings) {
-    paletteSelect.value = runtime_settings.palette;
+    for (const name in zoneCards) {
+      const { effectSelect, paletteSelect } = zoneCards[name];
+      const zoneSettings = runtime_settings.zones?.[name];
+      if (!zoneSettings) continue;
+      if (document.activeElement !== effectSelect) effectSelect.value = zoneSettings.effect;
+      if (document.activeElement !== paletteSelect) paletteSelect.value = zoneSettings.palette;
+    }
   }
 
   if (led_frame) {
-    paintSwatchStrip(ledFrameCtx, ledFrameCanvas, led_frame);
+    let offset = 0;
+    for (const name in zoneCards) {
+      const { zone, ctx, canvas, sourceReadout } = zoneCards[name];
+      const slice = led_frame.slice(offset, offset + zone.pixels);
+      paintSwatchStrip(ctx, canvas, slice);
+      sourceReadout.textContent = `${zone.source} = ${resolveSource(data, zone.source).toFixed(2)}`;
+      offset += zone.pixels;
+    }
   }
 
   // Update the globals the sketch reads.
   window.appState.mood = state.mood;
   window.appState.activity = state.activity_level;
   window.appState.presenceCount = state.presence_count;
-  if (runtime_settings) {
-    window.appState.palette = runtime_settings.palette; // which named palette to draw with
-  }
 
   // We don't yet get raw noise separately from the server — for now we
   // approximate it as activity_level. When we split them apart in
@@ -137,25 +228,13 @@ const wsHandle = window.connectWS((data) => {
   document.getElementById("audio-scene-value").textContent = state.audio_scene ?? "—";
 }, status);
 
-function sendEffectChoice() {
-  wsHandle.send({
-    control: {
-      action: "set_effect",
-      effect: effectSelect.value,
-      palette: paletteSelect.value,
-    },
-  });
-}
-effectSelect.addEventListener("change", sendEffectChoice);
-paletteSelect.addEventListener("change", sendEffectChoice);
-
 // Every 50ms, sample the p5 canvas and send colours to Python. Currently
-// unconsumed server-side (led_loop runs the selected system effect
+// unconsumed server-side (led_loop runs each zone's own selected effect
 // instead) — kept running for its own visual/demo value and as groundwork
 // for a future user-sketch-upload feature, not because this is a bug.
-// Painted locally into the "sampled from sketch" swatch (pipeline stage 1)
-// so that dormant-but-computed step is actually visible, distinct from
-// the real LED output (stage 2, painted above from led_frame).
+// Painted locally into the "sampled from sketch" swatch so that
+// dormant-but-computed step is actually visible, distinct from each zone's
+// real LED output (painted above from led_frame).
 setInterval(() => {
   if (typeof window.sampleCanvas !== "function") return;
   if (!pixelMap) return; // still waiting on the server's LED config
