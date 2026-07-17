@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Creative Computing — Upload a Sketch</title>
+  <link rel="stylesheet" href="/style.css">
+  <style>
+    body { max-width: 720px; margin-inline: auto; }
+    #code-input { width: 100%; min-height: 260px; font-family: monospace; font-size: 0.85rem; box-sizing: border-box; }
+    #job-status { font-family: var(--font-label); font-size: 0.9rem; margin-top: 0.75rem; min-height: 1.2em; color: var(--muted); }
+    #job-status.error { color: var(--error); }
+    #job-status.success { color: var(--success); }
+    #preview-error { color: var(--error); font-size: 0.85rem; min-height: 1.2em; }
+    #preview-container { background: #e2e2e2; border-radius: 8px; overflow: hidden; margin-top: 0.5rem; }
+    #preview-container iframe.sketch-frame { display: block; width: 100%; aspect-ratio: 1200 / 100; border: none; }
+  </style>
+</head>
+<body>
+  <h1>Upload a Sketch <span id="status">connecting…</span></h1>
+
+  <div class="panel">
+    <h2>Write or paste your sketch</h2>
+    <p style="color: var(--muted); font-size: 0.85rem;">
+      A p5 <strong>instance-mode</strong> sketch — same shape as the
+      built-in example. Your code must build its own instance:
+      <code>const sketch = (p) => { p.setup = () => {...}; p.draw = () =>
+      {...}; }; new p5(sketch);</code>. Inside it, read
+      <code>window.appState</code> (mood/activity/presenceCount),
+      <code>window.sensors</code>, and <code>window.paletteData</code> for
+      live data. It runs sandboxed — it can't see or affect anything else on
+      this page.
+    </p>
+    <div class="field">
+      <span class="field-label">Name</span>
+      <input type="text" id="name-input" placeholder="e.g. my_first_sketch">
+    </div>
+    <div class="field">
+      <span class="field-label">Load from a file<small>Optional — reads a .js file's contents into the box below</small></span>
+      <input type="file" id="file-input" accept=".js,text/javascript">
+    </div>
+    <div class="field">
+      <span class="field-label">Code</span>
+      <textarea id="code-input" spellcheck="false"></textarea>
+    </div>
+    <div class="field">
+      <span></span>
+      <span>
+        <button id="preview-button">Preview</button>
+        <button id="submit-button">Submit</button>
+      </span>
+    </div>
+    <div id="job-status"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Preview</h2>
+    <div id="preview-error"></div>
+    <div id="preview-container"></div>
+  </div>
+
+  <div id="back-link"><a href="/index.html">← Back to dashboard</a></div>
+
+  <script src="/pixelMap.js"></script>
+  <script src="/wsClient.js"></script>
+  <script src="/sketchSandbox.js"></script>
+  <script src="/create.js"></script>
+</body>
+</html>

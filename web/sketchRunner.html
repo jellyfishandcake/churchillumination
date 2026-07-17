@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>sketch runner</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #e2e2e2; overflow: hidden; }
+</style>
+</head>
+<body>
+<div id="sketch-container"></div>
+
+<!-- Same libraries sketch.js's own docstring already calls out as "any
+     future student sketch can use" — loaded here (inside the sandbox) so a
+     submitted sketch gets the exact same toolkit the built-in one does. -->
+<script src="https://cdn.jsdelivr.net/npm/p5@1.11.0/lib/p5.min.js"></script>
+<script src="/pixelMap.js"></script>
+<script src="/colourPalette.js"></script>
+<script src="/effects.js"></script>
+
+<script>
+// This document is loaded into a `<iframe sandbox="allow-scripts">` (see
+// sketchSandbox.js). Without `allow-same-origin`, the browser gives it an
+// opaque origin: it cannot reach `window.parent`'s properties and the
+// parent cannot reach into it either. `postMessage` is the one door left
+// open between the two — see sketchSandbox.js for the matching parent-side
+// half of this protocol.
+//
+// A submitted sketch's source runs as a plain <script> in *this* document,
+// so it shares this window with the code below — same as sketch.js already
+// assumes (it reads/writes window.appState, window.sensors, etc.). Nothing
+// below is a new API a sketch author needs to learn: it's exactly the
+// window-global convention sketch.js (the built-in example) already uses,
+// just now populated from postMessage instead of a same-window app.js.
+
+window.sensors = { noise: { level: 0.0 } };
+window.appState = { mood: "neutral", activity: 0.0, presenceCount: 0 };
+window.paletteData = null;
+window.numPixels = null;
+window.pixelMap = null;
+
+let canvasReadySent = false;
+let lastErrorReported = null;
+
+function reportError(message) {
+  // De-dupe: a broken draw() throws the same error every frame otherwise,
+  // which would flood the parent with identical postMessages 20x/sec.
+  if (message === lastErrorReported) return;
+  lastErrorReported = message;
+  parent.postMessage({ type: "error", message }, "*");
+}
+
+// Catches anything a submitted sketch throws asynchronously from p5's own
+// requestAnimationFrame-driven draw loop — a try/catch around injecting the
+// <script> tag only covers its synchronous top-level code (setup/draw
+// bodies run later, outside that try/catch).
+window.onerror = (message) => {
+  reportError(String(message));
+  return true; // don't also spam this frame's own (invisible) console
+};
+
+window.addEventListener("message", (event) => {
+  const data = event.data || {};
+  if (data.type === "sketch") {
+    try {
+      const script = document.createElement("script");
+      script.textContent = data.code;
+      document.body.appendChild(script);
+    } catch (err) {
+      reportError(err.message);
+    }
+  } else if (data.type === "helpers") {
+    // Mutate in place, don't reassign — a sketch's draw() closes over
+    // these objects once; reassigning window.appState itself would leave
+    // that closure reading a stale copy forever. Same reasoning as the
+    // parent page's pre-sandbox app.js used for these exact globals.
+    if (data.helpers.sensors) Object.assign(window.sensors, data.helpers.sensors);
+    if (data.helpers.appState) Object.assign(window.appState, data.helpers.appState);
+    if (data.helpers.paletteData) window.paletteData = data.helpers.paletteData;
+  } else if (data.type === "leds") {
+    window.numPixels = data.numPixels;
+    window.pixelMap = data.pixelMap;
+  }
+});
+
+// Same 50ms cadence app.js used before this moved into the sandbox.
+setInterval(() => {
+  if (!canvasReadySent && window.sketchDimensions) {
+    canvasReadySent = true;
+    parent.postMessage({ type: "canvasReady", ...window.sketchDimensions }, "*");
+  }
+  if (typeof window.sampleCanvas === "function" && window.pixelMap) {
+    try {
+      const pixels = window.sampleCanvas(window.pixelMap);
+      if (pixels) parent.postMessage({ type: "pixels", pixels }, "*");
+    } catch (err) {
+      reportError(err.message);
+    }
+  }
+}, 50);
+
+// Tells the parent this document's libraries are loaded and it's safe to
+// post the sketch source over — avoids a race where code arrives before p5
+// exists to run it.
+parent.postMessage({ type: "ready" }, "*");
+</script>
+</body>
+</html>

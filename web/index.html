@@ -19,8 +19,13 @@
     .metric-value { font-variant-numeric: tabular-nums; font-weight: 500; }
     .bar { height: 6px; background: var(--hairline); border-radius: 3px; overflow: hidden; margin-top: 0.25rem; }
     .bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width 100ms; }
-    #sketch-container { grid-column: 1 / -1; background: #e2e2e2; border-radius: 8px; overflow: hidden; }
-    #sketch-container canvas { display: block; width: 100%; height: auto; }
+    #sketch-panel { grid-column: 1 / -1; }
+    #sketch-toolbar { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem; }
+    #sketch-toolbar h2 { margin: 0; }
+    #sketch-toolbar a { margin-left: auto; font-size: 0.85rem; color: var(--accent); }
+    #sketch-error { color: var(--error); font-size: 0.85rem; min-height: 1.2em; }
+    #sketch-container { background: #e2e2e2; border-radius: 8px; overflow: hidden; }
+    #sketch-container iframe.sketch-frame { display: block; width: 100%; aspect-ratio: 1200 / 100; border: none; }
     .stage-label { color: var(--muted); font-size: 0.8rem; }
     .stage-label small { display: block; color: var(--muted); opacity: 0.75; font-size: 0.72rem; margin-top: 0.15rem; }
     #admin-link { grid-column: 1 / -1; text-align: right; font-size: 0.85rem; }
@@ -83,17 +88,22 @@
     </div>
   </div>
  
-  <div id="sketch-container"></div>
+  <div id="sketch-panel">
+    <div id="sketch-toolbar">
+      <h2>Sketch</h2>
+      <select id="sketch-select"></select>
+      <a href="/create.html">Upload your own →</a>
+    </div>
+    <div id="sketch-error"></div>
+    <div id="sketch-container"></div>
+  </div>
 
   <div id="admin-link"><a href="/admin.html">Admin →</a></div>
 
-  <script src="https://cdn.jsdelivr.net/npm/p5@1.11.0/lib/p5.min.js"></script>
   <script src="/pixelMap.js"></script>
   <script src="/wsClient.js"></script>
   <script src="/zoneUtils.js"></script>
-  <script src="/colourPalette.js"></script>
-  <script src="/effects.js"></script>
-  <script src="/sketch.js"></script>
+  <script src="/sketchSandbox.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

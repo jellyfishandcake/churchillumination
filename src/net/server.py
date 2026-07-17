@@ -98,6 +98,11 @@ ADMIN_ACTIONS = {
 PALETTE_NAME_RE = re.compile(r"^[A-Za-z0-9_\- ]{1,40}$")
 MAX_IMAGE_DATA_URL_CHARS = 8_000_000  # comfortably under max_size below, after base64 overhead
 
+# Stricter than PALETTE_NAME_RE (no spaces) since this becomes a filename,
+# not just a display label - see the upload_sketch handler below.
+SKETCH_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+MAX_SKETCH_CHARS = 50_000
+
 
 async def handle_client(websocket):
     """Called once per browser connection. Sends the latest state ~20x/sec,
@@ -253,6 +258,29 @@ async def _handle_control(websocket, payload: dict) -> None:
             "error": None, "overwritten": False,
         }
 
+    elif action == "upload_sketch":
+        name = payload.get("name")
+        code = payload.get("code")
+
+        if not (isinstance(name, str) and SKETCH_NAME_RE.match(name)):
+            print(f"[server] rejected upload_sketch: invalid name {name!r}")
+            return
+        if not (isinstance(code, str) and code.strip()):
+            print("[server] rejected upload_sketch: code missing/empty")
+            return
+        if len(code) > MAX_SKETCH_CHARS:
+            print("[server] rejected upload_sketch: code too large")
+            return
+
+        # No scan of `code` itself for anything unsafe - the sandboxed
+        # iframe (web/sketchRunner.html) is the actual security boundary,
+        # not a source-level check here. See CLAUDE.md's sandboxing decision.
+        SKETCHES_DIR.mkdir(parents=True, exist_ok=True)
+        (SKETCHES_DIR / f"{name}.js").write_text(code, encoding="utf-8")
+        if name not in latest["sketches"]:
+            latest["sketches"] = latest["sketches"] + [name]
+        print(f"[server] saved sketch {name!r}")
+
     else:
         print(f"[server] ignoring unknown control action: {action!r}")
  
@@ -263,6 +291,10 @@ async def _handle_control(websocket, payload: dict) -> None:
 # the dashboard without needing a separate web server.
  
 WEB_DIR = pathlib.Path(__file__).parent.parent.parent / "web"
+# Uploaded sketches (see upload_sketch above) live under WEB_DIR so
+# serve_static's existing path-escape check covers fetching them for free -
+# no separate static route needed.
+SKETCHES_DIR = WEB_DIR / "sketches"
  
 MIME_TYPES = {
     ".html": "text/html",

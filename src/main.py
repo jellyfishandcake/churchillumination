@@ -13,6 +13,7 @@ The orchestrator. Runs four things concurrently:
 All four share one asyncio event loop. Nothing blocks the others.
 """
 import asyncio
+import pathlib
 import time
 
 import numpy as np
@@ -389,6 +390,11 @@ async def main():
     }
     server.latest["effects"] = list(registry.EFFECTS.keys())
     server.latest["palettes"] = list(PALETTES.keys())
+    # Previously-uploaded sketches (web/sketches/*.js, see server.py's
+    # upload_sketch control action) so they're still selectable on the
+    # dashboard after a restart, not just for the session that uploaded them.
+    sketches_dir = pathlib.Path("web/sketches")
+    server.latest["sketches"] = sorted(p.stem for p in sketches_dir.glob("*.js")) if sketches_dir.is_dir() else []
     # Full colour data (not just names), so a sketch can use the exact same
     # named palettes the Python effects use - one source of truth, not a
     # second hand-typed copy of the colours living in JS.
