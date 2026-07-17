@@ -7,20 +7,26 @@ config.py's leds.zones defaults uses. main.py looks names up here rather
 than hardcoding the mapping itself, so there's exactly one place that has
 to agree with the web UI's <select> options.
 
-Every zone (main strip or a smaller section like the heart-rate segment)
-uses the same effect classes below - just its own palette and its own
-intensity source (see main.py's led_loop/_resolve_source). There's no
-separate "bulb effect" shape anymore: a zone that used to be a flat glow
-is just a zone running organic_twinkle with a warm palette, same as any
-other section.
+Every zone (a large ambient panel or a small cutout like heart-rate) picks
+one effect class from the same registry below - just its own palette and
+its own named source(s) (see main.py's led_loop/_resolve_sources). Most
+effects take a single `intensity` kwarg (organic_wave/organic_comet/
+organic_twinkle/pulse); temp_humidity_matrix takes `temperature`+
+`humidity` instead - a zone's configured `source` dict keys must match
+whichever effect it's assigned, since led_loop calls effect.step(**sources).
 """
 
-from .led_effects import OrganicWaveEffect, OrganicCometEffect, OrganicTwinkleEffect
+from .led_effects import (
+    OrganicWaveEffect, OrganicCometEffect, OrganicTwinkleEffect,
+    PulseEffect, TempHumidityMatrixEffect,
+)
 
 EFFECTS = {
     "organic_wave": OrganicWaveEffect,
     "organic_comet": OrganicCometEffect,
     "organic_twinkle": OrganicTwinkleEffect,
+    "pulse": PulseEffect,
+    "temp_humidity_matrix": TempHumidityMatrixEffect,
 }
 
 # Defensive fallback if a zone's configured effect/palette name doesn't

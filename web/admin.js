@@ -1,8 +1,13 @@
-// admin.js — the passcode-gated terminal: sensor toggles, activation/
-// smoothing tuning, and a manual state override. Every control just sends
-// a `{"control": {...}}` message (src/net/server.py's
-// _handle_control validates and applies it) and reflects back whatever
-// the server broadcasts, so multiple admin devices stay in sync.
+// admin.js — the passcode-gated terminal: per-zone effect/palette
+// controls, sensor toggles, activation/smoothing tuning, and a manual
+// state override. Every control just sends a `{"control": {...}}` message
+// (src/net/server.py's _handle_control validates and applies it) and
+// reflects back whatever the server broadcasts, so multiple admin devices
+// stay in sync. The zone controls used to be public on index.html, but
+// moved here once the strip became multiple zones - see server.py's
+// ADMIN_ACTIONS.
+
+const { paintSwatchStrip, resolveSources, formatSources, buildSelectOptions } = window.zoneUtils;
 
 const status = document.getElementById("status");
 const loginPanel = document.getElementById("login-panel");
@@ -10,6 +15,7 @@ const controls = document.getElementById("controls");
 const passcodeInput = document.getElementById("passcode-input");
 const loginButton = document.getElementById("login-button");
 const loginError = document.getElementById("login-error");
+const zonesGrid = document.getElementById("zones-grid");
 const sensorToggles = document.getElementById("sensor-toggles");
 const activationTimeoutInput = document.getElementById("activation-timeout-input");
 const smoothingAlphaInput = document.getElementById("smoothing-alpha-input");
@@ -24,6 +30,74 @@ const statusReadout = document.getElementById("status-readout");
 let loggedIn = false;
 let sensorTogglesBuilt = false;
 let tabsInitialized = false;
+
+// One entry per zone, keyed by zone name: { zone, effectSelect,
+// paletteSelect, canvas, ctx, sourceReadout }. Built once when
+// leds.zones/effects/palettes all first arrive.
+const zoneCards = {};
+
+function buildZoneCards(zones, effects, palettes) {
+  zonesGrid.innerHTML = "";
+  for (const zone of zones) {
+    const card = document.createElement("div");
+    card.className = "zone-card";
+
+    const heading = document.createElement("h3");
+    heading.textContent = `${zone.name} (${zone.pixels}px)`;
+    card.appendChild(heading);
+
+    const effectField = document.createElement("div");
+    effectField.className = "field";
+    const effectLabel = document.createElement("span");
+    effectLabel.className = "field-label";
+    effectLabel.textContent = "Pattern";
+    const effectSelect = document.createElement("select");
+    buildSelectOptions(effectSelect, effects);
+    effectField.append(effectLabel, effectSelect);
+    card.appendChild(effectField);
+
+    const paletteField = document.createElement("div");
+    paletteField.className = "field";
+    const paletteLabel = document.createElement("span");
+    paletteLabel.className = "field-label";
+    paletteLabel.textContent = "Palette";
+    const paletteSelect = document.createElement("select");
+    buildSelectOptions(paletteSelect, palettes);
+    paletteField.append(paletteLabel, paletteSelect);
+    card.appendChild(paletteField);
+
+    const canvas = document.createElement("canvas");
+    canvas.className = "swatch-strip";
+    canvas.width = zone.pixels;
+    canvas.height = 1;
+    card.appendChild(canvas);
+
+    const sourceReadout = document.createElement("div");
+    sourceReadout.className = "source-readout";
+    card.appendChild(sourceReadout);
+
+    zonesGrid.appendChild(card);
+
+    const sendChoice = () => {
+      wsHandle.send({
+        control: {
+          action: "set_zone_effect",
+          zone: zone.name,
+          effect: effectSelect.value,
+          palette: paletteSelect.value,
+        },
+      });
+    };
+    effectSelect.addEventListener("change", sendChoice);
+    paletteSelect.addEventListener("change", sendChoice);
+
+    zoneCards[zone.name] = {
+      zone, effectSelect, paletteSelect, canvas,
+      ctx: canvas.getContext("2d"),
+      sourceReadout,
+    };
+  }
+}
 
 function setLoggedIn(value) {
   loggedIn = value;
@@ -91,13 +165,48 @@ const wsHandle = window.connectWS(
       return;
     }
 
-    const { state, sensor_health, runtime_settings } = data;
+    const { state, sensor_health, runtime_settings, leds, effects, palettes, led_frame } = data;
     if (!runtime_settings) return;
 
     if (!sensorTogglesBuilt) {
       buildSensorToggles(runtime_settings.sensors_enabled, sensor_health);
     } else {
       syncSensorToggles(runtime_settings.sensors_enabled);
+    }
+
+    if (Object.keys(zoneCards).length === 0 && leds?.zones?.length && effects && palettes) {
+      buildZoneCards(leds.zones, effects, palettes);
+    }
+
+    // Palettes, unlike effects, can appear at any time via contribute.html -
+    // diff-append any name not already an <option> to every zone's palette
+    // picker, same reasoning as app.js's read-only dashboard.
+    if (palettes) {
+      for (const name in zoneCards) {
+        const { paletteSelect } = zoneCards[name];
+        const existing = new Set(Array.from(paletteSelect.options).map((o) => o.value));
+        const missing = palettes.filter((p) => !existing.has(p));
+        if (missing.length) buildSelectOptions(paletteSelect, missing);
+      }
+    }
+
+    for (const name in zoneCards) {
+      const { zone, effectSelect, paletteSelect, sourceReadout } = zoneCards[name];
+      const zoneSettings = runtime_settings.zones?.[name];
+      if (zoneSettings) {
+        if (document.activeElement !== effectSelect) effectSelect.value = zoneSettings.effect;
+        if (document.activeElement !== paletteSelect) paletteSelect.value = zoneSettings.palette;
+      }
+      sourceReadout.textContent = formatSources(resolveSources(data, zone.source));
+    }
+
+    if (led_frame) {
+      let offset = 0;
+      for (const name in zoneCards) {
+        const { zone, ctx, canvas } = zoneCards[name];
+        paintSwatchStrip(ctx, canvas, led_frame.slice(offset, offset + zone.pixels));
+        offset += zone.pixels;
+      }
     }
 
     if (document.activeElement !== activationTimeoutInput) {

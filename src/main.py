@@ -181,27 +181,53 @@ async def sensor_loop(sensors, infer, activation_tracker, hr_tracker, motion_tra
         # stays raw going into hr_tracker above, same as PIR presence does.
         server.latest["heart_rate"] = {"bpm": smoothed.get("heart_rate"), "engaged": hr_engaged}
         server.latest["interactions"] = {"motion_burst": motion_burst}
+        # Every sensor's smoothed reading, flat (see e.g. pir.py's docstring
+        # on why sensors share one flat namespace, distinct keys). Lets a
+        # zone's `source` reference any raw reading (e.g.
+        # "sensors.temperature") without main.py needing to hand-curate a
+        # publish point per field the way heart_rate/interactions above do.
+        server.latest["sensors"] = smoothed
 
         await asyncio.sleep(0.05)  # 20 Hz
 
 
-def _resolve_source(latest: dict, path: str) -> float:
+def _resolve_one_source(latest: dict, spec) -> float:
     """Walk a dot-path (e.g. "heart_rate.engaged") into server.latest and
-    return a 0..1 intensity. Missing path -> 0.0 (fail soft, e.g. a zone
-    configured before its source sensor's first tick has landed); bool ->
-    1.0/0.0; anything else -> clamped to 0..1. Doesn't validate that the
-    path "makes sense" (e.g. bpm isn't 0..1) - the zone config is trusted
-    the same way config.py's _deep_merge trusts config.yaml."""
+    return a 0..1 value. `spec` is either the dot-path string directly, or
+    a {"path", "min", "max"} dict - the latter linearly rescales a reading
+    that isn't already 0..1 (e.g. temperature in °C) before clamping.
+    Missing path -> 0.0 (fail soft, e.g. a zone configured before its
+    source sensor's first tick has landed); bool -> 1.0/0.0. Doesn't
+    validate that an unscaled path "makes sense" as 0..1 (e.g. bpm isn't) -
+    the zone config is trusted the same way config.py's _deep_merge trusts
+    config.yaml."""
+    if isinstance(spec, dict):
+        path, lo, hi = spec["path"], spec.get("min"), spec.get("max")
+    else:
+        path, lo, hi = spec, None, None
+
     value = latest
     for part in path.split("."):
         if not isinstance(value, dict) or part not in value:
             return 0.0
         value = value[part]
+
     if isinstance(value, bool):
         return 1.0 if value else 0.0
-    if isinstance(value, (int, float)):
-        return min(max(float(value), 0.0), 1.0)
-    return 0.0
+    if not isinstance(value, (int, float)):
+        return 0.0
+
+    value = float(value)
+    if lo is not None and hi is not None and hi != lo:
+        value = (value - lo) / (hi - lo)
+    return min(max(value, 0.0), 1.0)
+
+
+def _resolve_sources(latest: dict, source_map: dict) -> dict:
+    """{name: 0..1 value, ...} for every named source a zone declares -
+    see _resolve_one_source. Keys must match the zone's chosen effect's
+    step() parameter names (led_loop calls effect.step(**sources))."""
+    return {name: _resolve_one_source(latest, spec) for name, spec in source_map.items()}
 
 
 def _zone_pixel_ranges(zones: list, num_pixels: int) -> list:
@@ -227,15 +253,16 @@ async def led_loop(leds, num_pixels, zones_config):
 
     zones_config (config["leds"]["zones"]) splits the physical strip into
     named sections, each running its own effect+palette
-    (server.runtime_settings["zones"][name], set by the per-zone picker on
-    the dashboard) at an intensity pulled from its own sensor signal
-    (zone["source"], a dot-path resolved by _resolve_source each tick) -
-    not one global activity_level shared by the whole strip. Per-zone
-    effect instances are only rebuilt when that zone's (effect, palette)
-    pair actually changes - same reasoning as before: effect objects hold
-    animation state (self.t, self.trail, ...) that must survive across
-    ticks, so rebuilding every tick would e.g. stop a comet's trail from
-    ever accumulating.
+    (server.runtime_settings["zones"][name], set from admin.html's Zones
+    tab - the public dashboard is read-only, see web/index.html) at one or
+    more named intensities pulled from its own sensor signals
+    (zone["source"], resolved each tick by _resolve_sources and passed to
+    effect.step() as **kwargs) - not one global activity_level shared by
+    the whole strip. Per-zone effect instances are only rebuilt when that
+    zone's (effect, palette) pair actually changes - same reasoning as
+    before: effect objects hold animation state (self.t, self.trail, ...)
+    that must survive across ticks, so rebuilding every tick would e.g.
+    stop a comet's trail from ever accumulating.
 
     All zone frames are concatenated into one array before gamma
     correction + a single render_pixels call, since it's still one
@@ -248,8 +275,18 @@ async def led_loop(leds, num_pixels, zones_config):
     """
     ranges = _zone_pixel_ranges(zones_config, num_pixels)
 
-    # Per-zone: (current_effect_name, current_palette_name, effect_instance)
-    zone_state = {zone["name"]: (None, None, None) for zone in zones_config}
+    # Per-zone: (current_effect_name, current_palette_name, effect_instance,
+    # last_frame, broken). `broken` is set when an admin picks an effect
+    # whose step() params don't match this zone's source keys (e.g.
+    # temp_humidity_matrix on a zone that only defines `intensity`) - once
+    # set, that zone just holds last_frame without retrying step() every
+    # tick (same TypeError every time otherwise, and the same "only log on
+    # the transition into failure" reasoning base.py's _mark_failed uses),
+    # until the picker changes to something else and it's worth retrying.
+    zone_state = {
+        zone["name"]: (None, None, None, np.zeros((end - start, 3), dtype=np.uint8), False)
+        for zone, (start, end) in zip(zones_config, ranges)
+    }
 
     while True:
         frames = []
@@ -260,15 +297,27 @@ async def led_loop(leds, num_pixels, zones_config):
             effect_name = settings.get("effect") or zone["effect"]
             palette_name = settings.get("palette") or zone["palette"]
 
-            current_effect_name, current_palette_name, effect = zone_state[name]
+            current_effect_name, current_palette_name, effect, last_frame, broken = zone_state[name]
             if (effect_name, palette_name) != (current_effect_name, current_palette_name):
                 effect_class = registry.EFFECTS.get(effect_name, registry.EFFECTS[registry.DEFAULT_EFFECT])
                 palette = PALETTES.get(palette_name, PALETTES[registry.DEFAULT_PALETTE])
                 effect = effect_class(n, palette)
-                zone_state[name] = (effect_name, palette_name, effect)
+                current_effect_name, current_palette_name = effect_name, palette_name
+                broken = False  # a new pick deserves a fresh attempt
 
-            intensity = _resolve_source(server.latest, zone["source"])
-            frames.append(effect.step(intensity))
+            sources = _resolve_sources(server.latest, zone["source"])
+            if broken:
+                frame = last_frame
+            else:
+                try:
+                    frame = effect.step(**sources)
+                except TypeError as exc:
+                    print(f"[led_loop] zone {name!r}: effect {effect_name!r} doesn't accept sources {list(sources)} — holding last frame until the pick changes ({exc})")
+                    frame = last_frame
+                    broken = True
+
+            zone_state[name] = (current_effect_name, current_palette_name, effect, frame, broken)
+            frames.append(frame)
 
         full_frame = np.concatenate(frames, axis=0) if frames else np.zeros((0, 3))
         frame = apply_gamma(full_frame).tolist()  # numpy -> plain ints, for JSON

@@ -1,6 +1,6 @@
-// tabs.js — small generic tab-switcher, used by admin.html (Sensors |
-// Tuning | Override | Status). Finds .tab-button/.tab-content pairs by
-// matching data-tab, wires clicks to toggle an "active" class.
+// tabs.js — small generic tab-switcher, used by admin.html (Zones |
+// Sensors | Tuning | Override | Status). Finds .tab-button/.tab-content
+// pairs by matching data-tab, wires clicks to toggle an "active" class.
 
 function initTabs(container) {
   const buttons = container.querySelectorAll(".tab-button");

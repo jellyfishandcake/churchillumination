@@ -181,6 +181,48 @@ class OrganicTwinkleEffect:
         return np.clip(frame, 0, 255).astype(np.uint8)
 
 
+class PulseEffect:
+    """One held colour (the palette's last/"hottest" anchor), brightness
+    eased toward `intensity` each tick - no hue-cycling, no spatial
+    animation. For zones where "pulsing/intensity only" is the actual
+    design intent (e.g. a small heart-rate cutout), not a lesser version
+    of the organic effects above."""
+
+    def __init__(self, n_pixels, palette, idle_level=0.15, ease=0.15):
+        self.n = n_pixels
+        self.color = np.array(hex_to_rgb(palette[-1]), dtype=float)
+        self.idle_level = idle_level
+        self.ease = ease
+        self.level = idle_level
+
+    def step(self, intensity: float = 0.0):
+        target = max(self.idle_level, min(1.0, intensity))
+        self.level += (target - self.level) * self.ease  # ease toward target, avoid a hard jump/flicker
+        frame = np.tile(self.color * self.level, (self.n, 1))
+        return np.clip(frame, 0, 255).astype(np.uint8)
+
+
+class TempHumidityMatrixEffect:
+    """Small dense matrix zone - `temperature` picks a position along the
+    palette gradient (cool end <-> warm end), `humidity` scales brightness.
+    Every pixel in the zone shows the same colour/brightness - one
+    combined reading, not a spatial pattern across the panel. A
+    deliberately simple first pass; a real 2D-spatial effect (e.g. driven
+    by the matrix's actual rows/cols) is future work once there's a
+    physical panel to look at and tune against."""
+
+    def __init__(self, n_pixels, palette):
+        self.n = n_pixels
+        self.lut = _palette_lut(palette)
+
+    def step(self, temperature: float = 0.5, humidity: float = 0.5):
+        index = int(min(max(temperature, 0.0), 1.0) * (len(self.lut) - 1))
+        color = self.lut[index].astype(float)
+        brightness = 0.3 + 0.7 * min(max(humidity, 0.0), 1.0)
+        frame = np.tile(color * brightness, (self.n, 1))
+        return np.clip(frame, 0, 255).astype(np.uint8)
+
+
 if __name__ == "__main__":
     n_pixels = 60
     effects = {

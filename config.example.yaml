@@ -14,28 +14,55 @@ server:
 leds:
   num_pixels: 60
   layout: strip   # strip|grid|ring — only "strip" is implemented so far (see web/pixelMap.js)
-  # Physical sections of the strip, e.g. ~1m each - each runs its own
-  # effect+palette (see src/output/effects/), changeable at runtime from
-  # the dashboard's per-zone picker, driven by its own sensor signal (a
-  # dot-path resolved against server.latest each tick - see main.py's
-  # _resolve_source). `pixels` across all zones should sum to num_pixels;
-  # led_loop pads/clamps the last zone if they don't, rather than crashing.
+  # Physical sections of the strip - modular/reorderable panels (detachable
+  # clips) but one continuous electrical chain (APA102's clocked signal
+  # tolerates the long/branching run), so reordering them physically just
+  # means reordering this list, nothing electrical to change. Each runs its
+  # own effect+palette (see src/output/effects/), changeable at runtime
+  # from admin.html's Zones tab (public dashboard is read-only - see
+  # web/index.html), driven by one or more named sensor signals. A source
+  # value is either a dot-path resolved against server.latest each tick, or
+  # {path, min, max} to linearly rescale a reading that isn't already 0..1
+  # (e.g. temperature in °C). "sensors.*" reaches any sensor's smoothed raw
+  # reading (server.latest["sensors"], every sensor's flat merged output -
+  # see main.py's sensor_loop); "state.*"/"heart_rate.*"/"interactions.*"
+  # reach the specific hand-curated fields those publish. See main.py's
+  # _resolve_sources/led_loop. `pixels` across all zones should sum to
+  # num_pixels; led_loop
+  # pads/clamps the last zone if they don't, rather than crashing.
+  #
+  # A zone's source dict keys must match its chosen effect's step()
+  # parameter names - organic_wave/organic_comet/organic_twinkle/pulse all
+  # take `intensity`; temp_humidity_matrix takes `temperature`+`humidity`.
   zones:
     - name: ambient
-      pixels: 48
-      effect: organic_wave       # organic_wave | organic_comet | organic_twinkle
+      pixels: 24
+      effect: organic_wave       # organic_wave | organic_comet | organic_twinkle | pulse | temp_humidity_matrix
       palette: winter            # any key in colour_palette.PALETTES / palettes.json
-      source: state.activity_level
+      source:
+        intensity: state.activity_level
+    - name: temp_humidity
+      pixels: 20
+      layout: matrix   # documentation/wiring metadata only - still one flat pixel range,
+      rows: 4          # wired serpentine to match, not a separate electrical output
+      cols: 5
+      effect: temp_humidity_matrix
+      palette: winter
+      source:
+        temperature: {path: sensors.temperature, min: 15, max: 30}
+        humidity: {path: sensors.humidity, min: 20, max: 70}
     - name: heart_rate
       pixels: 6
-      effect: organic_twinkle
+      effect: pulse   # deliberately not an organic effect - a single held colour, brightness only
       palette: festive
-      source: heart_rate.engaged        # bool -> 1.0/0.0
-    - name: movement
-      pixels: 6
+      source:
+        intensity: heart_rate.engaged        # bool -> 1.0/0.0
+    - name: accelerometer
+      pixels: 10
       effect: organic_comet
       palette: autumn
-      source: interactions.motion_burst # bool -> 1.0/0.0
+      source:
+        intensity: interactions.motion_burst # bool -> 1.0/0.0
 
 # How long (in seconds) the installation stays "activated" after the last
 # presence detection before falling back to idle. See src/intelligence/activation.py.

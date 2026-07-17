@@ -120,3 +120,11 @@ pre {
 
 #back-link { font-size: 0.85rem; }
 #back-link a { color: var(--muted); }
+
+/* Shared by index.html's read-only zone display and admin.html's Zones
+   tab - see web/zoneUtils.js. */
+.swatch-strip { width: 100%; height: 32px; image-rendering: pixelated; border-radius: 4px; margin-top: 0.5rem; display: block; }
+#zones-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; }
+.zone-card { background: var(--bg); border: 1px solid var(--hairline); border-radius: 6px; padding: 1rem; }
+.zone-card h3 { margin: 0 0 0.6rem; font-family: var(--font-label); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; }
+.zone-card .source-readout { font-family: var(--font-label); color: var(--muted); font-size: 0.78rem; margin-top: 0.5rem; }

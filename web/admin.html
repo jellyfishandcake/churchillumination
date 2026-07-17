@@ -43,10 +43,18 @@
 
   <div id="controls">
     <div class="tabs">
+      <button class="tab-button" data-tab="zones">Zones</button>
       <button class="tab-button" data-tab="sensors">Sensors</button>
       <button class="tab-button" data-tab="tuning">Tuning</button>
       <button class="tab-button" data-tab="override">Override</button>
       <button class="tab-button" data-tab="status">Status</button>
+    </div>
+
+    <div id="tab-zones" class="tab-content">
+      <div class="panel">
+        <h2>Zones</h2>
+        <div id="zones-grid"></div>
+      </div>
     </div>
 
     <div id="tab-sensors" class="tab-content">
@@ -109,6 +117,7 @@
   <div id="back-link"><a href="/index.html">← Back to dashboard</a></div>
 
   <script src="/wsClient.js"></script>
+  <script src="/zoneUtils.js"></script>
   <script src="/tabs.js"></script>
   <script src="/admin.js"></script>
 </body>

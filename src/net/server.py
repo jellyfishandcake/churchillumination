@@ -78,17 +78,21 @@ runtime_settings = {
 admin_passcode = None
 admin_clients = set()
 
-# Actions only an authenticated admin connection may perform. "admin_login",
-# "set_zone_effect", and "build_palette" are intentionally absent - login is
-# how you become admin, and the per-zone effect/palette pickers plus the
-# contribute.html palette builder are the controls public users (anyone on
-# the LAN) get.
+# Actions only an authenticated admin connection may perform. "admin_login"
+# and "build_palette" are intentionally absent - login is how you become
+# admin, and the contribute.html palette builder is the one control public
+# users (anyone on the LAN) still get. set_zone_effect used to be public
+# too (a single global effect/palette picker on index.html), but once the
+# strip became multiple zones a public picker meant any visitor could
+# fight over any zone - index.html is now read-only, and this picker lives
+# in admin.html's Zones tab instead.
 ADMIN_ACTIONS = {
     "toggle_sensor",
     "set_activation_timeout",
     "set_smoothing_alpha",
     "set_state_override",
     "clear_state_override",
+    "set_zone_effect",
 }
 
 PALETTE_NAME_RE = re.compile(r"^[A-Za-z0-9_\- ]{1,40}$")

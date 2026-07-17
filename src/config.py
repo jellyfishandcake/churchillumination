@@ -14,15 +14,43 @@ DEFAULTS = {
     "leds": {
         "num_pixels": 60,  # change this number in config for default number of pixels to drive
         "layout": "strip",
-        # Physical sections of the strip - each runs its own effect+palette,
-        # driven by its own sensor signal (a dot-path into server.latest,
-        # resolved each tick by main.py's _resolve_source). `pixels` across
-        # all zones should sum to num_pixels; led_loop pads/clamps the last
+        # Physical sections of the strip - modular/reorderable panels
+        # (detachable clips) but one continuous electrical chain, so
+        # reordering them physically just means reordering this list.
+        # Each zone runs its own effect+palette, driven by one or more
+        # named sensor signals (see each zone's `source` dict - values are
+        # either a dot-path into server.latest, or {path, min, max} to
+        # linearly rescale a not-already-0..1 reading like temperature).
+        # Resolved each tick by main.py's _resolve_sources and passed to
+        # the zone's effect as **kwargs, so a source dict's keys must match
+        # the chosen effect's step() parameter names. `pixels` across all
+        # zones should sum to num_pixels; led_loop pads/clamps the last
         # zone if they don't, rather than crashing over a config typo.
         "zones": [
-            {"name": "ambient", "pixels": 48, "effect": "organic_wave", "palette": "winter", "source": "state.activity_level"},
-            {"name": "heart_rate", "pixels": 6, "effect": "organic_twinkle", "palette": "festive", "source": "heart_rate.engaged"},
-            {"name": "movement", "pixels": 6, "effect": "organic_comet", "palette": "autumn", "source": "interactions.motion_burst"},
+            {
+                "name": "ambient", "pixels": 24,
+                "effect": "organic_wave", "palette": "winter",
+                "source": {"intensity": "state.activity_level"},
+            },
+            {
+                "name": "temp_humidity", "pixels": 20,
+                "layout": "matrix", "rows": 4, "cols": 5,  # documentation/wiring metadata only
+                "effect": "temp_humidity_matrix", "palette": "winter",
+                "source": {
+                    "temperature": {"path": "sensors.temperature", "min": 15, "max": 30},
+                    "humidity": {"path": "sensors.humidity", "min": 20, "max": 70},
+                },
+            },
+            {
+                "name": "heart_rate", "pixels": 6,
+                "effect": "pulse", "palette": "festive",
+                "source": {"intensity": "heart_rate.engaged"},
+            },
+            {
+                "name": "accelerometer", "pixels": 10,
+                "effect": "organic_comet", "palette": "autumn",
+                "source": {"intensity": "interactions.motion_burst"},
+            },
         ],
     },
     "activation": {"timeout_seconds": 300.0},

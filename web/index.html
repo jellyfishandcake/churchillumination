@@ -21,7 +21,6 @@
     .bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width 100ms; }
     #sketch-container { grid-column: 1 / -1; background: #e2e2e2; border-radius: 8px; overflow: hidden; }
     #sketch-container canvas { display: block; width: 100%; height: auto; }
-    .swatch-strip { width: 100%; height: 32px; image-rendering: pixelated; border-radius: 4px; margin-top: 0.5rem; display: block; }
     .stage-label { color: var(--muted); font-size: 0.8rem; }
     .stage-label small { display: block; color: var(--muted); opacity: 0.75; font-size: 0.72rem; margin-top: 0.15rem; }
     #admin-link { grid-column: 1 / -1; text-align: right; font-size: 0.85rem; }
@@ -30,10 +29,6 @@
     #qr-panel img { width: 90px; height: 90px; border-radius: 4px; background: #fff; padding: 4px; border: 1px solid var(--hairline); }
     #qr-panel p { margin: 0; color: var(--muted); font-size: 0.85rem; }
     #qr-panel a { color: var(--accent); }
-    #zones-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; }
-    .zone-card { background: var(--bg); border: 1px solid var(--hairline); border-radius: 6px; padding: 1rem; }
-    .zone-card h3 { margin: 0 0 0.6rem; font-family: var(--font-label); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; }
-    .zone-card .source-readout { font-family: var(--font-label); color: var(--muted); font-size: 0.78rem; margin-top: 0.5rem; }
   </style>
 </head>
 <body>
@@ -95,6 +90,7 @@
   <script src="https://cdn.jsdelivr.net/npm/p5@1.11.0/lib/p5.min.js"></script>
   <script src="/pixelMap.js"></script>
   <script src="/wsClient.js"></script>
+  <script src="/zoneUtils.js"></script>
   <script src="/colourPalette.js"></script>
   <script src="/effects.js"></script>
   <script src="/sketch.js"></script>
