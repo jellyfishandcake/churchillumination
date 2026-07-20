@@ -28,7 +28,9 @@ class LEDStrip:
         self.num_pixels = num_pixels
         self._spi = None
 
-        if spidev is not None:
+        if spidev is None:
+            print("[LEDStrip] spidev not installed - printing frames instead of driving real LEDs (pip install -r requirements-pi.txt)")
+        else:
             try:
                 spi = spidev.SpiDev()
                 spi.open(spi_bus, spi_device)
