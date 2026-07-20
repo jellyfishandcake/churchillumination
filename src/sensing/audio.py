@@ -1,9 +1,11 @@
 import csv
 import pathlib
 import threading
+from fractions import Fraction
 
 import numpy as np
 import sounddevice as sd
+from scipy.signal import resample_poly
 from .base import Sensor
 
 # Same "Tasks-ready" YAMNet bundle Google's own Raspberry Pi audio_classifier
@@ -46,6 +48,19 @@ def _load_labels() -> list:
         return [row["display_name"] for row in csv.DictReader(f)]
 
 
+def _resample_ratio(native_rate: int, target_rate: int = 16000) -> tuple:
+    """Reduced (up, down) integer ratio for scipy.signal.resample_poly.
+    Cheap USB mics commonly only support their own native rate (44100Hz,
+    48000Hz, ...) over the raw ALSA hardware interface, not the 16000Hz
+    YAMNet needs directly - opening an InputStream at 16000Hz on such a
+    device fails at stream-open time (PortAudio error -9997, "Invalid
+    sample rate"). Detecting the connected mic's actual native rate and
+    resampling in software (rather than hardcoding one specific mic's rate)
+    means this keeps working if the mic's ever swapped for a different one."""
+    frac = Fraction(target_rate, native_rate).limit_denominator(1000)
+    return frac.numerator, frac.denominator
+
+
 class AudioSensor(Sensor):
     # here we read laptop mic and turns volume into a number
     def __init__(self, sensitivity: float = 20.0, score_threshold: float = 0.3): ## Calibrate sensitivity to get a good range of loudness - between 0 and 1 (max)
@@ -76,13 +91,26 @@ class AudioSensor(Sensor):
                 print(f"[AudioSensor] couldn't load YAMNet ({exc}) - scene classification disabled")
                 self._interpreter = None
 
-        self._stream = sd.InputStream(
-            channels=1,
-            samplerate = 16000,
-            blocksize = 1600,
-            callback = self._on_audio,
-        )
-        self._stream.start()
+        # See _resample_ratio's docstring - the input stream runs at
+        # whatever rate the connected mic actually supports natively, not a
+        # hardcoded 16000, and _on_audio resamples down before it reaches
+        # the classifier (which does need exactly 16000Hz).
+        self._resample_up = 1
+        self._resample_down = 1
+        self._stream = None
+        try:
+            native_rate = int(sd.query_devices(kind="input")["default_samplerate"])
+            self._resample_up, self._resample_down = _resample_ratio(native_rate)
+            self._stream = sd.InputStream(
+                channels=1,
+                samplerate=native_rate,
+                blocksize=round(native_rate * 0.1),  # ~0.1s per callback, same cadence as before
+                callback=self._on_audio,
+            )
+            self._stream.start()
+        except Exception as exc:
+            print(f"[AudioSensor] couldn't open an audio input stream ({exc}) - loudness/scene readings disabled")
+            self._stream = None
 
     def _classify(self, window: np.ndarray) -> None:
         """Runs off the audio callback thread (see _on_audio) - a TFLite
@@ -106,15 +134,20 @@ class AudioSensor(Sensor):
             self._classifying = False
 
     def _on_audio(self, indata, frames, time_info, status):
-        rms = float(np.sqrt(np.mean(indata**2)))
-        self._loudness = min(1.0, rms*self.sensitivity) # scale + clamp to a max of 1
+        mono = indata[:, 0]
+        rms = float(np.sqrt(np.mean(mono**2)))
+        self._loudness = min(1.0, rms*self.sensitivity) # scale + clamp to a max of 1 - computed on the mic's native rate directly, resampling doesn't meaningfully change RMS
 
         if self._interpreter is not None:
-            # indata is already float32 in [-1, 1] (sounddevice's default
-            # dtype), matching what the model expects directly. Keep only
-            # the most recent WINDOW_SAMPLES - a sliding window, not an
-            # ever-growing buffer.
-            self._buffer = np.concatenate([self._buffer, indata[:, 0]])[-WINDOW_SAMPLES:]
+            # Resample from the mic's native rate to the 16000Hz the model
+            # needs (see _resample_ratio) - only bothers doing this work
+            # when there's actually a classifier loaded to feed. indata is
+            # already float32 in [-1, 1] (sounddevice's default dtype),
+            # matching what the model expects directly, just at the wrong
+            # rate. Keep only the most recent WINDOW_SAMPLES - a sliding
+            # window, not an ever-growing buffer.
+            resampled = resample_poly(mono, self._resample_up, self._resample_down).astype(np.float32)
+            self._buffer = np.concatenate([self._buffer, resampled])[-WINDOW_SAMPLES:]
             if len(self._buffer) == WINDOW_SAMPLES and not self._classifying:
                 self._classifying = True
                 threading.Thread(target=self._classify, args=(self._buffer.copy(),), daemon=True).start()
