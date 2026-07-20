@@ -1,4 +1,5 @@
 sounddevice
+Pillow   # tools/build_palette.py's colour extraction (imported by palette_jobs.py, unconditionally - not an optional hardware lib like the ones below)
 opencv-python
 websockets
 numpy
