@@ -424,14 +424,22 @@ async def main():
     except OSError as exc:
         print(f"[main] couldn't generate QR code (no network route?): {exc}")
 
-    # Run all four concurrently. gather() waits for all to finish
-    # (they won't — they're infinite loops).
-    await asyncio.gather(
-        sensor_loop(sensors, infer, activation_tracker, hr_tracker, motion_tracker),
-        led_loop(leds, config["leds"]["num_pixels"], config["leds"]["zones"]),
-        palette_build_loop(),
-        server.start_server(host=config["server"]["host"], port=config["server"]["port"]),
-    )
+    try:
+        # Run all four concurrently. gather() waits for all to finish
+        # (they won't — they're infinite loops).
+        await asyncio.gather(
+            sensor_loop(sensors, infer, activation_tracker, hr_tracker, motion_tracker),
+            led_loop(leds, config["leds"]["num_pixels"], config["leds"]["zones"]),
+            palette_build_loop(),
+            server.start_server(host=config["server"]["host"], port=config["server"]["port"]),
+        )
+    finally:
+        # Ctrl+C cancels this coroutine at whatever await it's sitting on -
+        # that raises right here, past the gather, so this always runs
+        # before the process actually exits. Without it the strip just
+        # holds whatever colour it last received (APA102 chips have no
+        # "power off" tied to the SPI line going quiet).
+        leds.render_pixels([[0, 0, 0]] * config["leds"]["num_pixels"])
  
  
 if __name__ == "__main__":
