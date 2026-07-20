@@ -3,7 +3,9 @@ opencv-python
 websockets
 numpy
 scipy
-mediapipe
+ai-edge-litert   # runs src/sensing/audio.py's YAMNet .tflite model directly -
+                 # mediapipe (the previous choice) has no working Linux
+                 # aarch64 build; this does, including for newer Python
 PyYAML
 paho-mqtt
 qrcode
