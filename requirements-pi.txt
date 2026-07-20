@@ -4,6 +4,8 @@
 # these falls back to a mock automatically if it isn't installed, so the
 # main pipeline runs fine on a dev laptop without any of this.
 
+spidev      # src/output/leds.py's APA102 strip driver, over the Pi's hardware SPI0
+            # (needs SPI enabled: sudo raspi-config -> Interface Options -> SPI)
 gpiozero    # mini PIR sensor
 lgpio       # gpiozero pin-factory backend required on Raspberry Pi 5 —
             # RPi.GPIO (gpiozero's default) does not support the Pi 5's

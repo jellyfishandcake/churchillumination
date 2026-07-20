@@ -1,5 +1,6 @@
 import csv
 import pathlib
+import random
 import threading
 from fractions import Fraction
 
@@ -66,6 +67,7 @@ class AudioSensor(Sensor):
     def __init__(self, sensitivity: float = 20.0, score_threshold: float = 0.3): ## Calibrate sensitivity to get a good range of loudness - between 0 and 1 (max)
         super().__init__()
         self._loudness = 0.0
+        self._mock_loudness = 0.05  # used only if no mic is ever found - see read()
         self.sensitivity = sensitivity
         self.score_threshold = score_threshold
         self._scene = None        # top YAMNet class name, e.g. "Speech" - None until the model's loaded and a result's arrived
@@ -153,6 +155,16 @@ class AudioSensor(Sensor):
                 threading.Thread(target=self._classify, args=(self._buffer.copy(),), daemon=True).start()
 
     def read(self) -> dict:
+        if self._stream is None:
+            # No mic at construction time (unplugged, or never present) -
+            # same "still something to react to on a dev machine/without
+            # hardware" contract every other sensor here follows, rather
+            # than freezing at 0. A gentle bounded random walk, not
+            # PIRSensor's occasional-spike style - loudness is a continuous
+            # level, not a discrete event.
+            self._mock_loudness = min(1.0, max(0.0, self._mock_loudness + random.uniform(-0.03, 0.03)))
+            return {"loudness": self._mock_loudness}
+
         reading = {"loudness": self._loudness}
         if self._interpreter is not None:
             reading["audio_scene"] = self._scene
