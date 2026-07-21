@@ -1,24 +1,29 @@
 """DFRobot Gravity/Fermion MAX30102 Heart Rate and Oximeter Sensor
-(SEN0344/SEN0518) over I2C.
+(SEN0344/SEN0518) over I2C, at I2C address 0x57 - DFRobot_BloodOxygen_S_I2C's
+actual default. (0x20/0x0020 only appear in that same driver's *UART/Modbus*
+mode, as the Modbus slave address - unrelated to the I2C address, despite
+the similar-looking name.)
 
 This is *not* a bare MAX30102 - the module has its own onboard MCU that
-runs the HR/SpO2 algorithm itself and exposes finished values over I2C at
-device address 0x20 (the MCU's address, not the raw MAX30102 chip's own
-0x57). No peak-detection/calibration code needed on our side: the vendor's
+runs the HR/SpO2 algorithm itself and exposes finished values over I2C.
+No peak-detection/calibration code needed on our side: the vendor's
 firmware already reports -1 for heartbeat/SpO2 whenever it doesn't have a
 valid finger lock, which is exactly the idle/contact signal this module
 needs - "is someone touching it right now", not a precise reading.
 
-The I2C register protocol below (device-ID check at 0x04, start-collection
-write at 0x20, get_heartbeat_SPO2 read at 0x0C) is adapted from DFRobot's
-own MIT-licensed Python driver:
+The I2C register protocol below (start-collection write at register 0x20,
+get_heartbeat_SPO2 read at register 0x0C) is adapted from DFRobot's own
+MIT-licensed driver:
   https://github.com/DFRobot/DFRobot_BloodOxygen_S
   Copyright (c) 2010 DFRobot Co.Ltd, MIT License
 Reimplemented against smbus2 (already a dependency) rather than vendoring
 their file directly, since that file unconditionally imports RPi.GPIO and
 pyserial for a UART mode this project doesn't use - which would break the
 "falls back to mock cleanly on a dev laptop" contract every other sensor in
-this codebase follows.
+this codebase follows. Presence is confirmed with a bare I2C probe
+(write_quick) rather than a register-based device-ID check, matching the
+official driver's own I2C begin() - the register-0x04 ID check only exists
+in that driver's UART/Modbus mode, not its I2C mode.
 """
 import random
 import time
@@ -30,9 +35,7 @@ try:
 except ImportError:
     smbus2 = None
 
-DEVICE_ADDRESS = 0x20
-REG_DEVICE_ID = 0x04
-EXPECTED_DEVICE_ID = 0x0020
+DEVICE_ADDRESS = 0x57
 REG_COLLECT_CONTROL = 0x20
 START_COLLECT = [0x00, 0x01]
 REG_HEARTBEAT_SPO2 = 0x0C
@@ -50,10 +53,9 @@ class HeartRateSensor(Sensor):
         if smbus2 is not None:
             try:
                 bus = smbus2.SMBus(i2c_bus)
-                device_id = bus.read_i2c_block_data(DEVICE_ADDRESS, REG_DEVICE_ID, 2)
-                if (device_id[0] << 8 | device_id[1]) == EXPECTED_DEVICE_ID:
-                    bus.write_i2c_block_data(DEVICE_ADDRESS, REG_COLLECT_CONTROL, START_COLLECT)
-                    self._bus = bus
+                bus.write_quick(DEVICE_ADDRESS)  # presence probe - device must ACK its address
+                bus.write_i2c_block_data(DEVICE_ADDRESS, REG_COLLECT_CONTROL, START_COLLECT)
+                self._bus = bus
             except Exception:
                 self._bus = None  # no DFRobot MAX30102 module on this bus
 
