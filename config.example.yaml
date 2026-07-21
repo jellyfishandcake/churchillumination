@@ -53,10 +53,11 @@ leds:
         humidity: {path: sensors.humidity, min: 20, max: 70}
     - name: heart_rate
       pixels: 6
-      effect: pulse   # deliberately not an organic effect - a single held colour, brightness only
+      effect: pulse   # deliberately not an organic effect - a single held colour, flashed per-beat
       palette: festive
       source:
-        intensity: heart_rate.engaged        # bool -> 1.0/0.0
+        intensity: heart_rate.engaged        # bool -> 1.0/0.0, gates idle glow vs beat-synced flashing
+        bpm: {path: heart_rate.bpm, min: 40, max: 180}   # must match PulseEffect.BPM_RANGE
     - name: accelerometer
       pixels: 10
       effect: organic_comet

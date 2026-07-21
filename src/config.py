@@ -44,7 +44,13 @@ DEFAULTS = {
             {
                 "name": "heart_rate", "pixels": 6,
                 "effect": "pulse", "palette": "festive",
-                "source": {"intensity": "heart_rate.engaged"},
+                # bpm's {min, max} must match PulseEffect.BPM_RANGE in
+                # led_effects.py - this is what turns the 0..1 _resolve_one_source
+                # gives every source back into the real BPM the effect flashes at.
+                "source": {
+                    "intensity": "heart_rate.engaged",
+                    "bpm": {"path": "heart_rate.bpm", "min": 40, "max": 180},
+                },
             },
             {
                 "name": "accelerometer", "pixels": 10,

@@ -182,22 +182,49 @@ class OrganicTwinkleEffect:
 
 
 class PulseEffect:
-    """One held colour (the palette's last/"hottest" anchor), brightness
-    eased toward `intensity` each tick - no hue-cycling, no spatial
-    animation. For zones where "pulsing/intensity only" is the actual
-    design intent (e.g. a small heart-rate cutout), not a lesser version
-    of the organic effects above."""
+    """One held colour (the palette's last/"hottest" anchor). While
+    `intensity` (heart_rate.engaged) is 0, holds a dim idle glow. Once
+    engaged, instead of a flat brightness it flashes once per heartbeat -
+    a sharp attack at the start of each beat, exponential decay before the
+    next - timed from `bpm`, so the zone visibly pulses at the wearer's
+    actual measured rate rather than just switching on.
 
-    def __init__(self, n_pixels, palette, idle_level=0.15, ease=0.15):
+    `bpm` arrives pre-rescaled to 0..1 by main.py's _resolve_one_source
+    (the zone's source config supplies the {min, max} real-BPM range - see
+    config.py's heart_rate zone) - BPM_RANGE here must match that config
+    so the two ends agree on what 0.0/1.0 mean.
+
+    TICK_SECONDS assumes the fixed 20Hz cadence every effect in this file
+    is driven at (main.py's led_loop) - effects don't receive an actual dt,
+    so this mirrors the same "fixed tick" assumption self.t increments
+    elsewhere in this file already make."""
+
+    TICK_SECONDS = 0.05
+    BPM_RANGE = (40.0, 180.0)
+
+    def __init__(self, n_pixels, palette, idle_level=0.15, ease=0.15, decay_rate=6.0):
         self.n = n_pixels
         self.color = np.array(hex_to_rgb(palette[-1]), dtype=float)
         self.idle_level = idle_level
         self.ease = ease
+        self.decay_rate = decay_rate
         self.level = idle_level
+        self.phase = 0.0
 
-    def step(self, intensity: float = 0.0):
-        target = max(self.idle_level, min(1.0, intensity))
-        self.level += (target - self.level) * self.ease  # ease toward target, avoid a hard jump/flicker
+    def step(self, intensity: float = 0.0, bpm: float = 0.5):
+        engaged = intensity > 0.5
+        if not engaged:
+            self.phase = 0.0  # next contact starts on a fresh beat, not mid-cycle
+            self.level += (self.idle_level - self.level) * self.ease
+            frame = np.tile(self.color * self.level, (self.n, 1))
+            return np.clip(frame, 0, 255).astype(np.uint8)
+
+        real_bpm = self.BPM_RANGE[0] + min(max(bpm, 0.0), 1.0) * (self.BPM_RANGE[1] - self.BPM_RANGE[0])
+        beat_period = 60.0 / real_bpm
+        self.phase = (self.phase + self.TICK_SECONDS / beat_period) % 1.0
+        pulse = np.exp(-self.phase * self.decay_rate)  # bright flash at phase 0, fading before the next beat
+        target = self.idle_level + (1.0 - self.idle_level) * pulse
+        self.level += (target - self.level) * self.ease  # ease avoids a hard jump/flicker frame-to-frame
         frame = np.tile(self.color * self.level, (self.n, 1))
         return np.clip(frame, 0, 255).astype(np.uint8)
 
