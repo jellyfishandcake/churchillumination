@@ -79,6 +79,7 @@ class AudioSensor(Sensor):
         self._labels = None
         self._buffer = np.zeros(0, dtype=np.float32)  # rolling window fed to the interpreter
         self._classifying = False  # guards against overlapping background inference calls
+        self._samples_since_classify = WINDOW_SAMPLES  # forces one right away once the buffer first fills
 
         if Interpreter is not None and YAMNET_MODEL_PATH.is_file():
             try:
@@ -150,8 +151,26 @@ class AudioSensor(Sensor):
             # window, not an ever-growing buffer.
             resampled = resample_poly(mono, self._resample_up, self._resample_down).astype(np.float32)
             self._buffer = np.concatenate([self._buffer, resampled])[-WINDOW_SAMPLES:]
-            if len(self._buffer) == WINDOW_SAMPLES and not self._classifying:
+            self._samples_since_classify += len(resampled)
+
+            # len(self._buffer) == WINDOW_SAMPLES stays true on every single
+            # callback once the rolling buffer first fills (it's a sliding
+            # window, not a one-shot fill) - without also gating on
+            # _samples_since_classify, that fires a fresh YAMNet inference
+            # ~10x/second forever instead of roughly once per window. That
+            # pins a background thread near 100% CPU continuously, which on
+            # a Pi is enough to starve the single asyncio event loop thread
+            # of the GIL - the "mic reading gets stuck and nothing updates,
+            # lights included" symptom this was causing. Gating to one
+            # trigger per full WINDOW_SAMPLES worth of new audio restores
+            # the intended ~1x/second cadence.
+            if (
+                len(self._buffer) == WINDOW_SAMPLES
+                and self._samples_since_classify >= WINDOW_SAMPLES
+                and not self._classifying
+            ):
                 self._classifying = True
+                self._samples_since_classify = 0
                 threading.Thread(target=self._classify, args=(self._buffer.copy(),), daemon=True).start()
 
     def read(self) -> dict:

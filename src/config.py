@@ -14,6 +14,16 @@ DEFAULTS = {
     "leds": {
         "num_pixels": 60,  # change this number in config for default number of pixels to drive
         "layout": "strip",
+        # Final output multiplier, applied after gamma correction (see
+        # led_effects.apply_gamma) right before pixels go to hardware. The
+        # APA102 driver's own per-pixel brightness byte is already left at
+        # its hardware max (see output/leds.py) - that's a 5-bit field with
+        # far less headroom than the 8-bit RGB channels, so there's nothing
+        # left to raise there. This is the actual "make it brighter" knob:
+        # >1.0 boosts (clipped to 255 per channel, so very bright pixels
+        # can clip/flatten rather than keep scaling), 1.0 leaves effects'
+        # own output untouched, <1.0 dims everything.
+        "brightness": 1.4,
         # Physical sections of the strip - modular/reorderable panels
         # (detachable clips) but one continuous electrical chain, so
         # reordering them physically just means reordering this list.

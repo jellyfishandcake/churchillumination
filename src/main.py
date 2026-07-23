@@ -248,7 +248,7 @@ def _zone_pixel_ranges(zones: list, num_pixels: int) -> list:
     return ranges
 
 
-async def led_loop(leds, num_pixels, zones_config):
+async def led_loop(leds, num_pixels, zones_config, brightness: float = 1.0):
     """Step each zone's selected effect and push the combined frame to the
     LED strip. 20 Hz.
 
@@ -321,7 +321,14 @@ async def led_loop(leds, num_pixels, zones_config):
             frames.append(frame)
 
         full_frame = np.concatenate(frames, axis=0) if frames else np.zeros((0, 3))
-        frame = apply_gamma(full_frame).tolist()  # numpy -> plain ints, for JSON
+        graded = apply_gamma(full_frame)
+        if brightness != 1.0:
+            # Applied after gamma, not before - this is the final "how bright
+            # does the strip actually look" scale, not a second gamma pass.
+            # Clips rather than rescales so a boosted highlight can flatten
+            # to solid white instead of the whole frame dimming to compensate.
+            graded = np.clip(graded.astype(np.float32) * brightness, 0, 255).astype(np.uint8)
+        frame = graded.tolist()  # numpy -> plain ints, for JSON
 
         leds.render_pixels(frame)
         server.latest["led_frame"] = frame
@@ -429,7 +436,7 @@ async def main():
         # (they won't — they're infinite loops).
         await asyncio.gather(
             sensor_loop(sensors, infer, activation_tracker, hr_tracker, motion_tracker),
-            led_loop(leds, config["leds"]["num_pixels"], config["leds"]["zones"]),
+            led_loop(leds, config["leds"]["num_pixels"], config["leds"]["zones"], config["leds"]["brightness"]),
             palette_build_loop(),
             server.start_server(host=config["server"]["host"], port=config["server"]["port"]),
         )
