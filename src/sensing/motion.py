@@ -92,6 +92,18 @@ class MotionSensor(Sensor):
         if frame is None:
             return {"motion": random.uniform(0.0, 0.05)}  # nothing attached
 
+        if is_thermal and (np.isnan(frame).any() or np.all(frame == frame.flat[0])):
+            # Pimoroni's MLX90640 C binding never raises a Python exception on
+            # I2C failure - it just prints "I2C Read Error!" internally and
+            # still returns its static buffer regardless, so a disconnected/
+            # failing sensor is indistinguishable from a working one via
+            # try/except alone. NaN, or all 768 pixels reading back exactly
+            # identical, is what that stale/never-actually-written buffer
+            # looks like - real thermal data always has some pixel-to-pixel
+            # sensor noise even pointed at a blank wall in a static room.
+            self._mark_failed(RuntimeError("thermal frame looks invalid (I2C read likely failing silently)"))
+            return {"motion": random.uniform(0.0, 0.05)}
+
         if self._prev is None:
             self._prev = frame
             self._mark_ok()
