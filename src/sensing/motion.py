@@ -34,7 +34,10 @@ except ImportError:
     cv2 = None
 
 FRAME_SIZE = 32 * 24  # MLX90640's fixed resolution
-FRAME_RATE_HZ = 16    # passed to MLX90640.setup() - see the library's README for supported rates
+FRAME_RATE_HZ = 8     # passed to MLX90640.setup() - see the library's README for supported rates.
+                      # Was 16 (the sensor's max) - dropped to 8 to give a marginal I2C
+                      # connection more timing headroom; MLX90640_API.cpp's frame-read
+                      # polling loop (cnt > 4) hits more retries the higher this is.
 
 
 class MotionSensor(Sensor):
