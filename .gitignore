@@ -3,3 +3,8 @@ __pycache__/
 config.yaml
 web/qr.png
 src/sensing/models/*.tflite
+
+# Pimoroni's MLX90640 C library - cloned/built directly under the project
+# root on the Pi (see requirements-pi.txt) - a third-party repo, not our
+# own code, so it shouldn't be tracked or committed here.
+mlx90640-library/
