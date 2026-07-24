@@ -54,7 +54,11 @@ const sketch = (p) => {
     const bandWidth = W / frame.length;
     for (let i = 0; i < frame.length; i++) {
       const [r, g, b] = frame[i];
-      const brightness = Math.max(r, g, b); // 0-255, doubles as this pixel's alpha
+      // sqrt-boosted, not a straight linear ratio - see zoneUtils.js's
+      // paintSwatchStrip for the full reasoning (same alpha-over-grey
+      // compositing here, same "dim colours crush to near-grey" bug
+      // otherwise).
+      const brightness = Math.sqrt(Math.max(r, g, b) / 255) * 255; // 0-255, doubles as this pixel's alpha
       p.fill(r, g, b, brightness);
       p.rect(i * bandWidth, 0, bandWidth, H);
     }
