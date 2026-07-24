@@ -24,7 +24,7 @@ FastLED's Pacifica or TwinkleFox:
 """
 
 import numpy as np
-from .colour_palette import PALETTES, hex_to_rgb, color_at, _palette_lut
+from .colour_palette import PALETTES, _palette_lut
 
 
 def _hash2d(ix, it, seed=0):
@@ -58,6 +58,20 @@ def value_noise(x, t, seed=0):
     return nx0 * (1 - st) + nx1 * st
 
 
+def scaled(intensity: float, low: float, high: float) -> float:
+    """Linear-interpolate intensity (0..1, clamped) into [low, high] - the
+    shared "quiet rooms get a slower/dimmer X, lively rooms get a faster/
+    brighter X" pattern every effect below uses for its own speed_scale/
+    brightness_scale/spawn_scale, factored out so effects share one formula
+    instead of each hand-rolling `low + (high - low) * intensity`. The
+    low/high pair still varies per effect/parameter by design (e.g. a
+    boolean-driven zone like accelerometer only ever sees intensity=0 or 1,
+    so its floor matters less than ambient's continuous activity_level) -
+    only the interpolation itself is shared, not the tuned endpoints."""
+    intensity = min(max(intensity, 0.0), 1.0)
+    return low + (high - low) * intensity
+
+
 def apply_gamma(rgb, gamma=2.2):
     """Perceptual brightness correction. Apply once, right before a frame
     goes to hardware - not inside individual effects, or you'll double-
@@ -84,9 +98,8 @@ class OrganicWaveEffect:
     def step(self, intensity: float = 1.0):
         """intensity is the current activity_level (0..1) - quiet rooms get
         a slower, dimmer flow; lively rooms get a faster, brighter one."""
-        intensity = min(max(intensity, 0.0), 1.0)
-        speed_scale = 0.3 + 0.9 * intensity
-        brightness_scale = 0.15 + 1.05 * intensity  # was 0.4 + 0.8*intensity - too little contrast between silence and loud
+        speed_scale = scaled(intensity, 0.3, 1.2)
+        brightness_scale = scaled(intensity, 0.3, 1.2)  # was 0.4-1.2 (too little contrast), then 0.15-1.2 (too dim)
 
         x = np.arange(self.n)
         layer1 = value_noise(x * self.scale, np.full(self.n, self.t), seed=self.seed)
@@ -122,9 +135,8 @@ class OrganicCometEffect:
     def step(self, intensity: float = 1.0):
         """intensity is the current activity_level (0..1) - quiet rooms get
         a slower, dimmer comet; lively rooms get a faster, brighter one."""
-        intensity = min(max(intensity, 0.0), 1.0)
-        speed_scale = 0.3 + 0.9 * intensity
-        brightness_scale = 0.4 + 0.8 * intensity
+        speed_scale = scaled(intensity, 0.3, 1.2)
+        brightness_scale = scaled(intensity, 0.4, 1.2)
 
         wobble = 0.35 * value_noise(np.array([self.t]), np.array([0.0]), seed=self.seed)[0]
         self.pos = (self.pos + self.speed * speed_scale * (1 + wobble)) % self.n
@@ -162,9 +174,8 @@ class OrganicTwinkleEffect:
     def step(self, intensity: float = 1.0):
         """intensity is the current activity_level (0..1) - quiet rooms get
         fewer, dimmer stars; lively rooms get more, brighter ones."""
-        intensity = min(max(intensity, 0.0), 1.0)
-        spawn_scale = 0.3 + 1.4 * intensity
-        brightness_scale = 0.4 + 0.8 * intensity
+        spawn_scale = scaled(intensity, 0.3, 1.7)
+        brightness_scale = scaled(intensity, 0.4, 1.2)
 
         self.brightness *= self.decay
         spawn = np.random.random(self.n) < self.spawn_prob * spawn_scale
@@ -182,12 +193,13 @@ class OrganicTwinkleEffect:
 
 
 class PulseEffect:
-    """One held colour (the palette's last/"hottest" anchor). While
-    `intensity` (heart_rate.engaged) is 0, holds a dim idle glow. Once
-    engaged, instead of a flat brightness it flashes once per heartbeat -
-    a sharp attack at the start of each beat, exponential decay before the
-    next - timed from `bpm`, so the zone visibly pulses at the wearer's
-    actual measured rate rather than just switching on.
+    """Colour AND brightness both sweep along the palette by how "deep" into
+    the current beat's flash we are - idle sits near the palette's first
+    (coolest/dimmest) anchor, each heartbeat's attack sweeps toward the
+    last (hottest/brightest) anchor and eases back. Uses the whole palette
+    (previously only ever rendered palette[-1] as a single held colour
+    scaled by brightness, wasting every other anchor - a 5-colour palette
+    like festive looked identical to a 1-colour one).
 
     `bpm` arrives pre-rescaled to 0..1 by main.py's _resolve_one_source
     (the zone's source config supplies the {min, max} real-BPM range - see
@@ -204,19 +216,23 @@ class PulseEffect:
 
     def __init__(self, n_pixels, palette, idle_level=0.15, ease=0.15, decay_rate=6.0):
         self.n = n_pixels
-        self.color = np.array(hex_to_rgb(palette[-1]), dtype=float)
+        self.lut = _palette_lut(palette)
         self.idle_level = idle_level
         self.ease = ease
         self.decay_rate = decay_rate
         self.level = idle_level
         self.phase = 0.0
 
+    def _color_at_level(self, level: float):
+        index = int(min(max(level, 0.0), 1.0) * (len(self.lut) - 1))
+        return self.lut[index].astype(float)
+
     def step(self, intensity: float = 0.0, bpm: float = 0.5):
         engaged = intensity > 0.5
         if not engaged:
             self.phase = 0.0  # next contact starts on a fresh beat, not mid-cycle
             self.level += (self.idle_level - self.level) * self.ease
-            frame = np.tile(self.color * self.level, (self.n, 1))
+            frame = np.tile(self._color_at_level(self.level), (self.n, 1))
             return np.clip(frame, 0, 255).astype(np.uint8)
 
         real_bpm = self.BPM_RANGE[0] + min(max(bpm, 0.0), 1.0) * (self.BPM_RANGE[1] - self.BPM_RANGE[0])
@@ -225,28 +241,40 @@ class PulseEffect:
         pulse = np.exp(-self.phase * self.decay_rate)  # bright flash at phase 0, fading before the next beat
         target = self.idle_level + (1.0 - self.idle_level) * pulse
         self.level += (target - self.level) * self.ease  # ease avoids a hard jump/flicker frame-to-frame
-        frame = np.tile(self.color * self.level, (self.n, 1))
+        frame = np.tile(self._color_at_level(self.level), (self.n, 1))
         return np.clip(frame, 0, 255).astype(np.uint8)
 
 
 class TempHumidityMatrixEffect:
-    """Small dense matrix zone - `temperature` picks a position along the
-    palette gradient (cool end <-> warm end), `humidity` scales brightness.
-    Every pixel in the zone shows the same colour/brightness - one
-    combined reading, not a spatial pattern across the panel. A
-    deliberately simple first pass; a real 2D-spatial effect (e.g. driven
-    by the matrix's actual rows/cols) is future work once there's a
-    physical panel to look at and tune against."""
+    """`temperature` picks a position along the palette gradient (cool end
+    <-> warm end), `humidity` scales overall brightness - still one
+    combined base colour across the panel, not a spatial pattern driven by
+    the matrix's actual rows/cols (that's future work once there's a
+    physical panel to tune against). On top of that base colour, `activity`
+    (state.activity_level - same signal the ambient zone reacts to, so this
+    zone's liveliness stays in sync with it rather than reading as a
+    separate, disconnected panel) drives a subtle per-pixel shimmer: a calm
+    room leaves the panel essentially flat and static like before, a lively
+    one gets a slow, visible noise-driven variation across the pixels."""
 
     def __init__(self, n_pixels, palette):
         self.n = n_pixels
         self.lut = _palette_lut(palette)
+        self.t = 0.0
 
-    def step(self, temperature: float = 0.5, humidity: float = 0.5):
+    def step(self, temperature: float = 0.5, humidity: float = 0.5, activity: float = 0.0):
+        activity = min(max(activity, 0.0), 1.0)
         index = int(min(max(temperature, 0.0), 1.0) * (len(self.lut) - 1))
         color = self.lut[index].astype(float)
         brightness = 0.3 + 0.7 * min(max(humidity, 0.0), 1.0)
-        frame = np.tile(color * brightness, (self.n, 1))
+
+        x = np.arange(self.n)
+        shimmer = value_noise(x * 0.15, np.full(self.n, self.t))  # roughly -1..1 per pixel
+        shimmer_amount = 0.25 * activity  # calm: ~0, panel reads flat; lively: visible variation
+        pixel_brightness = brightness * (1.0 + shimmer * shimmer_amount)
+
+        frame = color[None, :] * pixel_brightness[:, None]
+        self.t += 0.01 + 0.04 * activity  # calm: near-static; lively: visibly drifting
         return np.clip(frame, 0, 255).astype(np.uint8)
 
 

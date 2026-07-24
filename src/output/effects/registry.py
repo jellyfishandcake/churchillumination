@@ -11,11 +11,12 @@ Every zone (a large ambient panel or a small cutout like heart-rate) picks
 one effect class from the same registry below - just its own palette and
 its own named source(s) (see main.py's led_loop/_resolve_sources). Most
 effects take a single `intensity` kwarg (organic_wave/organic_comet/
-organic_twinkle); temp_humidity_matrix takes `temperature`+`humidity`
-instead; pulse takes `intensity`+`bpm` (bpm times its per-beat flash to
-the wearer's actual heart rate - see PulseEffect's docstring) - a zone's
-configured `source` dict keys must match whichever effect it's assigned,
-since led_loop calls effect.step(**sources).
+organic_twinkle); temp_humidity_matrix takes `temperature`+`humidity`,
+plus an optional `activity` for its shimmer (see its own docstring); pulse
+takes `intensity`+`bpm` (bpm times its per-beat flash to the wearer's
+actual heart rate - see PulseEffect's docstring) - a zone's configured
+`source` dict keys must match whichever effect it's assigned, since
+led_loop calls effect.step(**sources).
 """
 
 from .led_effects import (
