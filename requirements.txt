@@ -12,3 +12,4 @@ paho-mqtt
 qrcode
 pyserial   # accel_stick.py's USB-serial link to the handheld M5Stack stick -
            # pure Python, works fine on a dev laptop too, not Pi-specific
+requests   # weather.py's Open-Meteo HTTP calls

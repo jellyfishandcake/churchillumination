@@ -27,6 +27,7 @@ from src.sensing.pir import PIRSensor
 from src.sensing.heart_rate import HeartRateSensor
 from src.sensing.accel_stick import AccelStickSensor
 from src.sensing.nodes import NodeSensor
+from src.sensing.weather import WeatherSensor
 from src.intelligence import rules
 from src.intelligence.activation import ActivationTracker
 from src.intelligence import palette_jobs
@@ -75,6 +76,12 @@ def build_sensors(config: dict) -> dict:
             node_ids=nodes_config["node_ids"],
             mqtt_host=nodes_config["mqtt_host"],
             mqtt_port=nodes_config["mqtt_port"],
+        )
+    if sensors_config["weather"]["enabled"]:
+        weather_config = sensors_config["weather"]
+        sensors["weather"] = WeatherSensor(
+            latitude=weather_config["latitude"],
+            longitude=weather_config["longitude"],
         )
 
     return sensors
@@ -163,6 +170,19 @@ async def sensor_loop(sensors, infer, activation_tracker, hr_tracker, motion_tra
         motion_burst = motion_tracker.update(raw.get("acceleration", 0.0) > MOTION_BURST_THRESHOLD, now)
 
         smoothed = _smooth_readings(smoothed, raw, alpha)
+
+        # How far indoor conditions have drifted from outdoor - magnitude
+        # only (not signed), since _resolve_one_source's {path, min, max}
+        # rescale always clamps to unsigned 0..1 (see main.py's own
+        # docstring on it). Only set when both readings are actually
+        # present (weather.py's WeatherSensor always returns something,
+        # real or mocked, once enabled - so this is really just "weather
+        # sensor enabled at all") - a zone referencing this path when it's
+        # absent just resolves to 0.0 via the same fail-soft path every
+        # other missing source already takes, so this is a no-op rather
+        # than an error if weather's disabled.
+        if "temperature" in smoothed and "outdoor_temperature" in smoothed:
+            smoothed["indoor_outdoor_temp_diff"] = abs(smoothed["temperature"] - smoothed["outdoor_temperature"])
 
         state = infer(smoothed)
         override = server.runtime_settings["state_override"]

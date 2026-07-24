@@ -250,21 +250,36 @@ class TempHumidityMatrixEffect:
     <-> warm end), `humidity` scales overall brightness - still one
     combined base colour across the panel, not a spatial pattern driven by
     the matrix's actual rows/cols (that's future work once there's a
-    physical panel to tune against). On top of that base colour, `activity`
-    (state.activity_level - same signal the ambient zone reacts to, so this
-    zone's liveliness stays in sync with it rather than reading as a
-    separate, disconnected panel) drives a subtle per-pixel shimmer: a calm
-    room leaves the panel essentially flat and static like before, a lively
-    one gets a slow, visible noise-driven variation across the pixels."""
+    physical panel to tune against). On top of that base colour:
+
+    - `activity` (state.activity_level - same signal the ambient zone
+      reacts to, so this zone's liveliness stays in sync with it rather
+      than reading as a separate, disconnected panel) drives a subtle
+      per-pixel shimmer: a calm room leaves the panel essentially flat and
+      static like before, a lively one gets a slow, visible noise-driven
+      variation across the pixels.
+    - `contrast` (how far indoor temperature has drifted from outdoor -
+      see main.py's indoor_outdoor_temp_diff) pushes the displayed colour
+      further toward whichever end of the palette it's already closest to
+      - "the room vs the world" reads as a more saturated/extreme colour
+      the more indoor conditions diverge from outside, rather than
+      needing a separate signed "which direction" input (the resolve
+      pipeline only ever gives unsigned 0..1 - see main.py's
+      _resolve_one_source). At contrast=0 (or no weather data at all) this
+      is a no-op - identical to the colour before this existed."""
 
     def __init__(self, n_pixels, palette):
         self.n = n_pixels
         self.lut = _palette_lut(palette)
         self.t = 0.0
 
-    def step(self, temperature: float = 0.5, humidity: float = 0.5, activity: float = 0.0):
+    def step(self, temperature: float = 0.5, humidity: float = 0.5, activity: float = 0.0, contrast: float = 0.0):
         activity = min(max(activity, 0.0), 1.0)
-        index = int(min(max(temperature, 0.0), 1.0) * (len(self.lut) - 1))
+        contrast = min(max(contrast, 0.0), 1.0)
+
+        t = min(max(temperature, 0.0), 1.0)
+        exaggerated_t = min(max(t + (t - 0.5) * contrast, 0.0), 1.0)
+        index = int(exaggerated_t * (len(self.lut) - 1))
         color = self.lut[index].astype(float)
         brightness = 0.3 + 0.7 * min(max(humidity, 0.0), 1.0)
 

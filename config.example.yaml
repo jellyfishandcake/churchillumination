@@ -60,6 +60,7 @@ leds:
         temperature: {path: sensors.temperature, min: 15, max: 30}
         humidity: {path: sensors.humidity, min: 20, max: 70}
         activity: state.activity_level   # drives a subtle shimmer - see TempHumidityMatrixEffect's docstring
+        contrast: {path: sensors.indoor_outdoor_temp_diff, min: 0, max: 15}   # indoor/outdoor divergence - see main.py's sensor_loop
     - name: heart_rate
       pixels: 6
       effect: pulse   # deliberately not an organic effect - a single held colour, flashed per-beat
@@ -140,3 +141,15 @@ sensors:
     node_ids:
       - node1
       - node2
+
+  # Outdoor weather via Open-Meteo (open-meteo.com) - free, no API key or
+  # account needed. Fetched on a slow background thread (every 10 minutes,
+  # see FETCH_INTERVAL_SECONDS in src/sensing/weather.py), not every tick -
+  # weather doesn't change fast enough to justify more, and hammering a
+  # free public API at 20Hz would be both wasteful and rude. Falls back to
+  # a mock if the network/API is unreachable, same as every other sensor.
+  # Defaults to Churchill College, Cambridge - override if the site moves.
+  weather:
+    enabled: true
+    latitude: 52.2153
+    longitude: 0.0983

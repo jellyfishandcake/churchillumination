@@ -92,6 +92,14 @@ DEFAULTS = {
             "mqtt_port": 1883,
             "node_ids": ["node1", "node2"],
         },
+        # Outdoor weather via Open-Meteo (free, no API key needed) - see
+        # src/sensing/weather.py. Defaults to Churchill College, Cambridge;
+        # override in config.yaml if the install site ever moves.
+        "weather": {
+            "enabled": True,
+            "latitude": 52.2153,
+            "longitude": 0.0983,
+        },
     },
 }
 
