@@ -86,7 +86,7 @@ class OrganicWaveEffect:
         a slower, dimmer flow; lively rooms get a faster, brighter one."""
         intensity = min(max(intensity, 0.0), 1.0)
         speed_scale = 0.3 + 0.9 * intensity
-        brightness_scale = 0.4 + 0.8 * intensity
+        brightness_scale = 0.15 + 1.05 * intensity  # was 0.4 + 0.8*intensity - too little contrast between silence and loud
 
         x = np.arange(self.n)
         layer1 = value_noise(x * self.scale, np.full(self.n, self.t), seed=self.seed)
