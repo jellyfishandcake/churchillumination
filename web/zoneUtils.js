@@ -27,7 +27,15 @@ function paintSwatchStrip(ctx, canvas, frame) {
   const imageData = ctx.createImageData(n, 1);
   for (let i = 0; i < n; i++) {
     const [r, g, b] = frame[i];
-    const alpha = Math.max(r, g, b) / 255; // brightness, doubles as blend weight
+    // sqrt, not a straight linear ratio - a plain `brightness/255` alpha
+    // crushes dim-but-saturated pixels toward the grey backdrop almost
+    // completely (e.g. a clearly-red [60,10,10] blends to a near-grey
+    // (187,175,175) - barely readable as "red" at all) even though that
+    // pixel is genuinely saturated in the real data sent to the physical
+    // LEDs. sqrt boosts low alphas disproportionately so dim colours still
+    // read as colours here, while true off/near-zero pixels still fade to
+    // grey as alpha approaches 0.
+    const alpha = Math.sqrt(Math.max(r, g, b) / 255);
     imageData.data[i * 4] = r * alpha + ZONE_SWATCH_OFF_STATE_GREY * (1 - alpha);
     imageData.data[i * 4 + 1] = g * alpha + ZONE_SWATCH_OFF_STATE_GREY * (1 - alpha);
     imageData.data[i * 4 + 2] = b * alpha + ZONE_SWATCH_OFF_STATE_GREY * (1 - alpha);
