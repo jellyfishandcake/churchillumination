@@ -2,6 +2,7 @@ import csv
 import pathlib
 import random
 import threading
+import time
 from fractions import Fraction
 
 import numpy as np
@@ -29,6 +30,15 @@ WINDOW_SAMPLES = 15600
 # tensor position, which is how _load_labels below turns a score index into
 # a name.
 YAMNET_LABELS_PATH = pathlib.Path(__file__).parent / "models" / "yamnet_class_map.csv"
+
+# _on_audio callbacks normally arrive every ~0.1s (see InputStream's
+# blocksize below) - if none has landed in this long, the stream has
+# silently stopped delivering audio (USB power management suspending the
+# mic, a driver hiccup, an implicit stop after a buffer overflow - all
+# things that happen to USB audio over many hours of uptime on a Pi, none
+# of which raise a Python exception). Generous margin over the normal
+# ~0.1s cadence so ordinary scheduling jitter never trips it.
+STALE_AFTER_SECONDS = 5.0
 
 # Originally ran through mediapipe.tasks.python.audio.AudioClassifier, which
 # wrapped this same model with streaming/label-lookup convenience. Switched
@@ -80,6 +90,7 @@ class AudioSensor(Sensor):
         self._buffer = np.zeros(0, dtype=np.float32)  # rolling window fed to the interpreter
         self._classifying = False  # guards against overlapping background inference calls
         self._samples_since_classify = WINDOW_SAMPLES  # forces one right away once the buffer first fills
+        self._latest_callback_at = None  # set once the stream's first callback actually lands - see read()
 
         if Interpreter is not None and YAMNET_MODEL_PATH.is_file():
             try:
@@ -137,6 +148,7 @@ class AudioSensor(Sensor):
             self._classifying = False
 
     def _on_audio(self, indata, frames, time_info, status):
+        self._latest_callback_at = time.monotonic()
         mono = indata[:, 0]
         rms = float(np.sqrt(np.mean(mono**2)))
         self._loudness = min(1.0, rms*self.sensitivity) # scale + clamp to a max of 1 - computed on the mic's native rate directly, resampling doesn't meaningfully change RMS
@@ -184,8 +196,21 @@ class AudioSensor(Sensor):
             self._mock_loudness = min(1.0, max(0.0, self._mock_loudness + random.uniform(-0.03, 0.03)))
             return {"loudness": self._mock_loudness}
 
+        # The stream object existing doesn't mean it's still actually
+        # delivering audio - see STALE_AFTER_SECONDS' docstring. Checked
+        # here rather than only in _on_audio since the whole point is
+        # detecting when that callback has stopped firing at all.
+        if (
+            self._latest_callback_at is not None
+            and time.monotonic() - self._latest_callback_at > STALE_AFTER_SECONDS
+        ):
+            self._mark_failed(RuntimeError("no audio callback in over 5s - stream likely died silently"))
+            self._mock_loudness = min(1.0, max(0.0, self._mock_loudness + random.uniform(-0.03, 0.03)))
+            return {"loudness": self._mock_loudness}
+
         reading = {"loudness": self._loudness}
         if self._interpreter is not None:
             reading["audio_scene"] = self._scene
             reading["audio_scene_score"] = self._scene_score
+        self._mark_ok()
         return reading
