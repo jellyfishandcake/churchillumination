@@ -43,8 +43,8 @@
 // 0. Fill in before flashing
 // ---------------------------------------------------------------------------
 
-static const char *WIFI_SSID = "CHANGE_ME";
-static const char *WIFI_PASSWORD = "CHANGE_ME";
+static const char *WIFI_SSID = "churchillumination-nodes";
+static const char *WIFI_PASSWORD = "iamanode123";
 
 // The Pi's LAN IP (not "localhost" - this board isn't the Pi). Find it on
 // the Pi with `hostname -I`. Must match the mosquitto listener you set up
