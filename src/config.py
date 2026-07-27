@@ -12,7 +12,7 @@ DEFAULTS = {
     # boundary if ever exposed further than that.
     "server": {"host": "0.0.0.0", "port": 8000},
     "leds": {
-        "num_pixels": 60,  # change this number in config for default number of pixels to drive
+        "num_pixels": 26,  # total APA102 pixels - only counts zones below with output.type "led"; match this to your physical strip length
         "layout": "strip",
         # Final output multiplier, applied after gamma correction (see
         # led_effects.apply_gamma) right before pixels go to hardware. The
@@ -22,37 +22,52 @@ DEFAULTS = {
         # left to raise there. This is the actual "make it brighter" knob:
         # >1.0 boosts (clipped to 255 per channel, so very bright pixels
         # can clip/flatten rather than keep scaling), 1.0 leaves effects'
-        # own output untouched, <1.0 dims everything.
+        # own output untouched, <1.0 dims everything. Only affects `led`
+        # zones - a `dmx` zone's own dimmer channel (if its layout has one)
+        # is the equivalent knob there, see each fixture's `channels`.
         "brightness": 1.4,
-        # Physical sections of the strip - modular/reorderable panels
-        # (detachable clips) but one continuous electrical chain, so
-        # reordering them physically just means reordering this list.
-        # Each zone runs its own effect+palette, driven by one or more
-        # named sensor signals (see each zone's `source` dict - values are
-        # either a dot-path into server.latest, or {path, min, max} to
-        # linearly rescale a not-already-0..1 reading like temperature).
-        # Resolved each tick by main.py's _resolve_sources and passed to
-        # the zone's effect as **kwargs, so a source dict's keys must match
-        # the chosen effect's step() parameter names. `pixels` across all
-        # zones should sum to num_pixels; led_loop pads/clamps the last
-        # zone if they don't, rather than crashing over a config typo.
+        # Named sections of the installation, each running its own
+        # effect+palette, driven by one or more named sensor signals (see
+        # each zone's `source` dict - values are either a dot-path into
+        # server.latest, or {path, min, max} to linearly rescale a
+        # not-already-0..1 reading like temperature). Resolved each tick by
+        # main.py's _resolve_sources and passed to the zone's effect as
+        # **kwargs, so a source dict's keys must match the chosen effect's
+        # step() parameter names.
+        #
+        # Each zone's `output` says which hardware it actually drives:
+        #   {type: led, pixels: N}   - a slice of the APA102 strip. `pixels`
+        #     across all `led` zones should sum to num_pixels above;
+        #     output_loop pads/clamps the last led zone if they don't,
+        #     rather than crashing over a config typo. Physical sections are
+        #     modular/reorderable panels (detachable clips) but one
+        #     continuous electrical chain, so reordering them physically
+        #     just means reordering the `led` zones in this list.
+        #   {type: dmx, start_address: N, channels: [...]} - a DMX512
+        #     fixture (e.g. an RGB/RGBW wall-washer bar) over a USB-DMX
+        #     interface, driven in parallel with the strip - see
+        #     output/dmx.py and main.py's output_loop. Needs dmx.enabled
+        #     (below) set true, and the fixture's real start_address +
+        #     channels checked against its own manual/DIP-switch chart.
         "zones": [
             {
-                "name": "ambient", "pixels": 24,
+                "name": "ambient",
                 "effect": "organic_wave", "palette": "winter",
                 "source": {"intensity": "state.activity_level"},
+                "output": {"type": "dmx", "start_address": 1, "channels": ["r", "g", "b"]},
             },
             {
-                "name": "temp_humidity", "pixels": 20,
+                "name": "temp_humidity",
                 "layout": "matrix", "rows": 4, "cols": 5,  # documentation/wiring metadata only
                 "effect": "temp_humidity_matrix", "palette": "winter",
                 "source": {
                     "temperature": {"path": "sensors.temperature", "min": 15, "max": 30},
                     "humidity": {"path": "sensors.humidity", "min": 20, "max": 70},
                 },
+                "output": {"type": "led", "pixels": 20},
             },
             {
-                "name": "heart_rate", "pixels": 6,
+                "name": "heart_rate",
                 "effect": "pulse", "palette": "festive",
                 # bpm's {min, max} must match PulseEffect.BPM_RANGE in
                 # led_effects.py - this is what turns the 0..1 _resolve_one_source
@@ -61,13 +76,25 @@ DEFAULTS = {
                     "intensity": "heart_rate.engaged",
                     "bpm": {"path": "heart_rate.bpm", "min": 40, "max": 180},
                 },
+                "output": {"type": "led", "pixels": 6},
             },
             {
-                "name": "accelerometer", "pixels": 10,
+                "name": "accelerometer",
                 "effect": "organic_comet", "palette": "autumn",
                 "source": {"intensity": "interactions.motion_burst"},
+                "output": {"type": "dmx", "start_address": 4, "channels": ["r", "g", "b"]},
             },
         ],
+    },
+    # Interface-level DMX512 settings - which zones actually send to it, and
+    # each fixture's start_address/channels, are configured per-zone above
+    # (leds.zones[].output). Off by default since this is bring-up/test gear
+    # (a borrowed fixture, an unconfirmed interface) - flip `enabled` once
+    # `python -m tools.test_dmx` confirms the interface talks to the
+    # fixture. See output/dmx.py.
+    "dmx": {
+        "enabled": False,
+        "port": None,  # null = auto-detect an FTDI/CH340 serial port; set e.g. "COM5" if that picks the wrong device
     },
     "activation": {"timeout_seconds": 300.0},
     # Isolated interaction signals (heart-rate contact, handheld-stick

@@ -12,7 +12,7 @@ server:
   port: 8000
 
 leds:
-  num_pixels: 60
+  num_pixels: 26   # total APA102 pixels - only counts zones below with output.type "led"; match this to your physical strip length
   layout: strip   # strip|grid|ring — only "strip" is implemented so far (see web/pixelMap.js)
   # Final output multiplier applied after gamma correction, right before
   # pixels go to hardware - the APA102 driver's own brightness byte is
@@ -20,37 +20,52 @@ leds:
   # the actual "make the strip brighter/dimmer" knob. >1.0 boosts (clips
   # per-channel at 255 rather than rescaling, so bright highlights can
   # flatten to white instead of dimming the whole frame to compensate),
-  # 1.0 leaves effects' own output untouched, <1.0 dims everything.
+  # 1.0 leaves effects' own output untouched, <1.0 dims everything. Only
+  # affects `led` zones - a `dmx` zone's own dimmer channel (if its mode has
+  # one) is the equivalent knob there.
   brightness: 1.4
-  # Physical sections of the strip - modular/reorderable panels (detachable
-  # clips) but one continuous electrical chain (APA102's clocked signal
-  # tolerates the long/branching run), so reordering them physically just
-  # means reordering this list, nothing electrical to change. Each runs its
-  # own effect+palette (see src/output/effects/), changeable at runtime
-  # from admin.html's Zones tab (public dashboard is read-only - see
-  # web/index.html), driven by one or more named sensor signals. A source
-  # value is either a dot-path resolved against server.latest each tick, or
-  # {path, min, max} to linearly rescale a reading that isn't already 0..1
-  # (e.g. temperature in °C). "sensors.*" reaches any sensor's smoothed raw
-  # reading (server.latest["sensors"], every sensor's flat merged output -
-  # see main.py's sensor_loop); "state.*"/"heart_rate.*"/"interactions.*"
-  # reach the specific hand-curated fields those publish. See main.py's
-  # _resolve_sources/led_loop. `pixels` across all zones should sum to
-  # num_pixels; led_loop
-  # pads/clamps the last zone if they don't, rather than crashing.
+  # Named sections of the installation. Each runs its own effect+palette
+  # (see src/output/effects/), driven by one or more named sensor signals.
+  # A source value is either a dot-path resolved against server.latest each
+  # tick, or {path, min, max} to linearly rescale a reading that isn't
+  # already 0..1 (e.g. temperature in °C). "sensors.*" reaches any sensor's
+  # smoothed raw reading (server.latest["sensors"], every sensor's flat
+  # merged output - see main.py's sensor_loop); "state.*"/"heart_rate.*"/
+  # "interactions.*" reach the specific hand-curated fields those publish.
+  # See main.py's _resolve_sources/output_loop.
   #
   # A zone's source dict keys must match its chosen effect's step()
   # parameter names - organic_wave/organic_comet/organic_twinkle/pulse all
   # take `intensity`; temp_humidity_matrix takes `temperature`+`humidity`.
+  #
+  # `output` says which hardware the zone actually drives:
+  #   {type: led, pixels: N}  - a slice of the APA102 strip (modular/
+  #     reorderable panels - detachable clips - but one continuous
+  #     electrical chain, so reordering panels physically just means
+  #     reordering the `led` zones in this list). Changeable at runtime
+  #     from admin.html's Zones tab (public dashboard is read-only - see
+  #     web/index.html). `pixels` across all `led` zones should sum to
+  #     num_pixels above; output_loop pads/clamps the last led zone if they
+  #     don't, rather than crashing.
+  #   {type: dmx, start_address: N, channels: [...]} - a DMX512 fixture
+  #     (e.g. an RGB/RGBW wall-washer bar) over a USB-DMX interface, driven
+  #     in parallel with the strip - see src/output/dmx.py and main.py's
+  #     output_loop. Needs dmx.enabled below set true. Not yet live-
+  #     swappable from admin.html - edit config.yaml + restart to change a
+  #     dmx zone's effect/palette. channels lists the role of each DMX
+  #     channel in the fixture's current mode (check its manual/DIP
+  #     switches): r/g/b/w map to colour, "dimmer" holds at 255 (many
+  #     fixtures show black regardless of RGB if their master dimmer
+  #     channel is 0), "strobe" holds at 0 (no strobe) - e.g.
+  #     [dimmer, r, g, b] for a 4ch mode with a master dimmer channel first.
   zones:
     - name: ambient
-      pixels: 24
       effect: organic_wave       # organic_wave | organic_comet | organic_twinkle | pulse | temp_humidity_matrix
       palette: winter            # any key in colour_palette.PALETTES / palettes.json
       source:
         intensity: state.activity_level
+      output: {type: dmx, start_address: 1, channels: [r, g, b]}
     - name: temp_humidity
-      pixels: 20
       layout: matrix   # documentation/wiring metadata only - still one flat pixel range,
       rows: 4          # wired serpentine to match, not a separate electrical output
       cols: 5
@@ -61,19 +76,32 @@ leds:
         humidity: {path: sensors.humidity, min: 20, max: 70}
         activity: state.activity_level   # drives a subtle shimmer - see TempHumidityMatrixEffect's docstring
         contrast: {path: sensors.indoor_outdoor_temp_diff, min: 0, max: 15}   # indoor/outdoor divergence - see main.py's sensor_loop
+      output: {type: led, pixels: 20}
     - name: heart_rate
-      pixels: 6
       effect: pulse   # deliberately not an organic effect - a single held colour, flashed per-beat
       palette: festive
       source:
         intensity: heart_rate.engaged        # bool -> 1.0/0.0, gates idle glow vs beat-synced flashing
         bpm: {path: heart_rate.bpm, min: 40, max: 180}   # must match PulseEffect.BPM_RANGE
+      output: {type: led, pixels: 6}
     - name: accelerometer
-      pixels: 10
       effect: organic_comet
       palette: autumn
       source:
         intensity: interactions.motion_burst # bool -> 1.0/0.0
+      output: {type: dmx, start_address: 4, channels: [r, g, b]}
+
+# Interface-level DMX512 settings - which zones actually send to it, and
+# each fixture's start_address/channels, are configured per-zone above
+# (leds.zones[].output). Off by default: this is bring-up/test gear
+# (borrowed fixture, unconfirmed interface). Before flipping `enabled` to
+# true, run `python -m tools.test_dmx ports` to find the interface, then
+# `python -m tools.test_dmx solid 255 0 0` to confirm it actually drives
+# the fixture, and check the fixture's manual/DIP switches for its real
+# start_address + channel mode (update the zones above to match).
+dmx:
+  enabled: false
+  port: null   # null = auto-detect an FTDI/CH340 serial port; set e.g. "COM5" if that picks the wrong device
 
 # How long (in seconds) the installation stays "activated" after the last
 # presence detection before falling back to idle. See src/intelligence/activation.py.

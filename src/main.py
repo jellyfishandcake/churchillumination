@@ -33,6 +33,7 @@ from src.intelligence.activation import ActivationTracker
 from src.intelligence import palette_jobs
 from src.net import network
 from src.output.leds import LEDStrip
+from src.output.dmx import DMXInterface
 from src.output.effects import registry
 from src.output.effects.colour_palette import PALETTES
 from src.output.effects.led_effects import apply_gamma
@@ -251,69 +252,109 @@ def _resolve_sources(latest: dict, source_map: dict) -> dict:
     return {name: _resolve_one_source(latest, spec) for name, spec in source_map.items()}
 
 
-def _zone_pixel_ranges(zones: list, num_pixels: int) -> list:
-    """[(start, end), ...] per zone, in config order. If the configured
-    pixel counts don't sum to num_pixels, pad/clamp the last zone so the
-    strip is always exactly filled - a config typo shouldn't crash the
-    installation."""
-    ranges = []
+def _led_zone_pixel_ranges(zones_config: list, num_pixels: int) -> dict:
+    """{zone_name: (start, end), ...} for zones whose output.type is "led" -
+    a "dmx" zone has no position on the strip, so it's skipped here (and
+    doesn't consume any of num_pixels). In config order. If the configured
+    led-zone pixel counts don't sum to num_pixels, pad/clamp the last led
+    zone so the strip is always exactly filled - a config typo shouldn't
+    crash the installation."""
+    led_zones = [zone for zone in zones_config if zone["output"]["type"] == "led"]
+    ranges = {}
     start = 0
-    for i, zone in enumerate(zones):
-        is_last = i == len(zones) - 1
-        end = num_pixels if is_last else min(num_pixels, start + zone["pixels"])
-        ranges.append((start, end))
+    for i, zone in enumerate(led_zones):
+        is_last = i == len(led_zones) - 1
+        end = num_pixels if is_last else min(num_pixels, start + zone["output"]["pixels"])
+        ranges[zone["name"]] = (start, end)
         start = end
     if start != num_pixels:
-        print(f"[led_loop] zone pixel counts sum to {start}, not num_pixels={num_pixels} — last zone padded/clamped to fit")
+        print(f"[output_loop] led-zone pixel counts sum to {start}, not num_pixels={num_pixels} — last led zone padded/clamped to fit")
     return ranges
 
 
-async def led_loop(leds, num_pixels, zones_config, brightness: float = 1.0):
-    """Step each zone's selected effect and push the combined frame to the
-    LED strip. 20 Hz.
+def _fixture_channel_values(channels_layout: list, rgb) -> list:
+    """Map one (r,g,b) triple to a DMX zone's fixture channel layout (its
+    output.channels config list, e.g. ["r","g","b"] or ["dimmer","r","g","b"]
+    - see the fixture's own manual/DIP-switch chart for which mode it's set
+    to). Roles not derived from colour default to a fixed constant:
+    "dimmer" holds fully open (many fixtures show black regardless of RGB
+    if their master dimmer channel is 0) and "strobe" holds at 0 (no
+    strobe) - neither is animated, since no zone source currently drives
+    them."""
+    r, g, b = (int(c) for c in rgb)
+    values = []
+    for role in channels_layout:
+        if role == "r":
+            values.append(r)
+        elif role == "g":
+            values.append(g)
+        elif role == "b":
+            values.append(b)
+        elif role == "w":
+            values.append(min(r, g, b))  # crude RGB->W: brightness shared across all three, not a true colour-mixing model
+        elif role == "dimmer":
+            values.append(255)
+        elif role == "strobe":
+            values.append(0)
+        else:
+            values.append(0)
+    return values
 
-    zones_config (config["leds"]["zones"]) splits the physical strip into
-    named sections, each running its own effect+palette
+
+async def output_loop(leds, dmx, num_pixels, zones_config, brightness: float = 1.0):
+    """Step every zone's selected effect once, then route each zone's frame
+    to whichever hardware its own `output` config points at - an `led` zone
+    (output: {type: led, pixels: N}) contributes a slice of the APA102
+    strip; a `dmx` zone (output: {type: dmx, start_address, channels}) is
+    treated as a single pixel (n_pixels=1 - a DMX fixture like a
+    wall-washer bar is one addressable light, not a strip of individually-
+    controllable LEDs) and is mapped into the shared 512-channel DMX
+    universe instead. Replaces the old led_loop/dmx_loop split now that a
+    zone's hardware target is just a config field on the same zone, not a
+    reason to duplicate the whole effect-stepping loop - see CLAUDE.md/the
+    conversation that led to this for why they used to be separate. 20 Hz.
+
+    Every zone still runs its own effect+palette
     (server.runtime_settings["zones"][name], set from admin.html's Zones
-    tab - the public dashboard is read-only, see web/index.html) at one or
-    more named intensities pulled from its own sensor signals
-    (zone["source"], resolved each tick by _resolve_sources and passed to
-    effect.step() as **kwargs) - not one global activity_level shared by
-    the whole strip. Per-zone effect instances are only rebuilt when that
-    zone's (effect, palette) pair actually changes - same reasoning as
-    before: effect objects hold animation state (self.t, self.trail, ...)
-    that must survive across ticks, so rebuilding every tick would e.g.
-    stop a comet's trail from ever accumulating.
-
-    All zone frames are concatenated into one array before gamma
-    correction + a single render_pixels call, since it's still one
-    physical strip either way.
+    tab for `led` zones - `dmx` zones aren't wired into that dashboard yet,
+    see the output.type=="dmx" branch below) at one or more named
+    intensities pulled from its own sensor signals (zone["source"],
+    resolved each tick by _resolve_sources and passed to effect.step() as
+    **kwargs). Per-zone effect instances are only rebuilt when that zone's
+    (effect, palette) pair actually changes - effect objects hold animation
+    state (self.t, self.trail, ...) that must survive across ticks, so
+    rebuilding every tick would e.g. stop a comet's trail from ever
+    accumulating.
 
     The browser's canvas-sampling pipeline (app.js/sketch.js/pixelMap.js,
     still sending {"pixels": [...]}) keeps running but is intentionally
     unconsumed here — kept for its own visual/demo value and as groundwork
     for a future user-sketch-upload feature, not because it's a bug.
     """
-    ranges = _zone_pixel_ranges(zones_config, num_pixels)
+    led_ranges = _led_zone_pixel_ranges(zones_config, num_pixels)
 
     # Per-zone: (current_effect_name, current_palette_name, effect_instance,
-    # last_frame, broken). `broken` is set when an admin picks an effect
-    # whose step() params don't match this zone's source keys (e.g.
-    # temp_humidity_matrix on a zone that only defines `intensity`) - once
-    # set, that zone just holds last_frame without retrying step() every
-    # tick (same TypeError every time otherwise, and the same "only log on
-    # the transition into failure" reasoning base.py's _mark_failed uses),
-    # until the picker changes to something else and it's worth retrying.
-    zone_state = {
-        zone["name"]: (None, None, None, np.zeros((end - start, 3), dtype=np.uint8), False)
-        for zone, (start, end) in zip(zones_config, ranges)
-    }
+    # last_frame, broken). `broken` is set when an effect's step() params
+    # don't match this zone's source keys (e.g. temp_humidity_matrix on a
+    # zone that only defines `intensity`) - once set, that zone just holds
+    # last_frame without retrying step() every tick (same TypeError every
+    # time otherwise, and the same "only log on the transition into
+    # failure" reasoning base.py's _mark_failed uses), until the effect
+    # pick changes to something else and it's worth retrying.
+    zone_state = {}
+    for zone in zones_config:
+        n = (led_ranges[zone["name"]][1] - led_ranges[zone["name"]][0]) if zone["output"]["type"] == "led" else 1
+        zone_state[zone["name"]] = (None, None, None, np.zeros((n, 3), dtype=np.uint8), False)
 
     while True:
-        frames = []
-        for zone, (start, end) in zip(zones_config, ranges):
+        led_frames = {}  # zone name -> frame, assembled into the full strip below, in led_ranges' order
+        dmx_universe = [0] * dmx.universe_size if dmx is not None else None
+
+        for zone in zones_config:
             name = zone["name"]
-            n = end - start
+            output = zone["output"]
+            n = (led_ranges[name][1] - led_ranges[name][0]) if output["type"] == "led" else 1
+
             settings = server.runtime_settings["zones"].get(name, {})
             effect_name = settings.get("effect") or zone["effect"]
             palette_name = settings.get("palette") or zone["palette"]
@@ -333,14 +374,24 @@ async def led_loop(leds, num_pixels, zones_config, brightness: float = 1.0):
                 try:
                     frame = effect.step(**sources)
                 except TypeError as exc:
-                    print(f"[led_loop] zone {name!r}: effect {effect_name!r} doesn't accept sources {list(sources)} — holding last frame until the pick changes ({exc})")
+                    print(f"[output_loop] zone {name!r}: effect {effect_name!r} doesn't accept sources {list(sources)} — holding last frame until the pick changes ({exc})")
                     frame = last_frame
                     broken = True
 
             zone_state[name] = (current_effect_name, current_palette_name, effect, frame, broken)
-            frames.append(frame)
 
-        full_frame = np.concatenate(frames, axis=0) if frames else np.zeros((0, 3))
+            if output["type"] == "led":
+                led_frames[name] = frame
+            elif output["type"] == "dmx" and dmx_universe is not None:
+                rgb = apply_gamma(frame)[0]
+                values = _fixture_channel_values(output["channels"], rgb)
+                start = output["start_address"] - 1  # DMX addresses are 1-based; universe list is 0-based
+                for i, value in enumerate(values):
+                    if 0 <= start + i < len(dmx_universe):
+                        dmx_universe[start + i] = value
+
+        ordered_led_frames = [led_frames[name] for name in led_ranges]
+        full_frame = np.concatenate(ordered_led_frames, axis=0) if ordered_led_frames else np.zeros((0, 3))
         graded = apply_gamma(full_frame)
         if brightness != 1.0:
             # Applied after gamma, not before - this is the final "how bright
@@ -348,10 +399,12 @@ async def led_loop(leds, num_pixels, zones_config, brightness: float = 1.0):
             # Clips rather than rescales so a boosted highlight can flatten
             # to solid white instead of the whole frame dimming to compensate.
             graded = np.clip(graded.astype(np.float32) * brightness, 0, 255).astype(np.uint8)
-        frame = graded.tolist()  # numpy -> plain ints, for JSON
+        led_frame = graded.tolist()  # numpy -> plain ints, for JSON
 
-        leds.render_pixels(frame)
-        server.latest["led_frame"] = frame
+        leds.render_pixels(led_frame)
+        server.latest["led_frame"] = led_frame
+        if dmx_universe is not None:
+            dmx.send_channels(dmx_universe)
 
         await asyncio.sleep(0.05)  # 20 Hz
 
@@ -401,6 +454,11 @@ async def main():
     config = load_config()
     sensors = build_sensors(config)
     leds = LEDStrip(num_pixels=config["leds"]["num_pixels"])
+    # Only constructed if a DMX fixture is actually enabled - see
+    # config.yaml's dmx block. Not attempted to open the serial port at all
+    # otherwise, so this stays silent on setups that don't have the USB-DMX
+    # interface plugged in.
+    dmx = DMXInterface(port=config["dmx"]["port"]) if config["dmx"]["enabled"] else None
     infer = rules.infer_state
     activation_tracker = ActivationTracker(timeout=config["activation"]["timeout_seconds"])
     hr_tracker = ActivationTracker(timeout=config["interaction"]["hr_contact_timeout_seconds"])
@@ -409,11 +467,21 @@ async def main():
     server.latest["leds"] = {
         "num_pixels": config["leds"]["num_pixels"],
         "layout": config["leds"]["layout"],
-        # Name + pixel count + source per zone, so the browser can build one
-        # card per zone, slice led_frame into per-zone swatches, and show a
-        # live readout of what's driving each zone - without duplicating
-        # the pixel-range/source-resolution logic led_loop already does.
-        "zones": [{"name": z["name"], "pixels": z["pixels"], "source": z["source"]} for z in config["leds"]["zones"]],
+        # Name + pixel count + source, per zone whose output.type is "led" -
+        # so the browser can build one card per zone, slice led_frame into
+        # per-zone swatches, and show a live readout of what's driving each
+        # zone, without duplicating the pixel-range/source-resolution logic
+        # output_loop already does. "dmx" zones are deliberately left out:
+        # admin.js's swatch slicing walks led_frame by zone.pixels in order,
+        # and a dmx zone has neither a pixel count nor a slot in led_frame -
+        # including it here would desync every zone's swatch after it. DMX
+        # zones' effect/palette are config-only for now (edit config.yaml +
+        # restart), not yet live-swappable from the dashboard - see
+        # output_loop's docstring.
+        "zones": [
+            {"name": z["name"], "pixels": z["output"]["pixels"], "source": z["source"]}
+            for z in config["leds"]["zones"] if z["output"]["type"] == "led"
+        ],
     }
     server.latest["effects"] = list(registry.EFFECTS.keys())
     server.latest["palettes"] = list(PALETTES.keys())
@@ -451,15 +519,17 @@ async def main():
     except OSError as exc:
         print(f"[main] couldn't generate QR code (no network route?): {exc}")
 
+    tasks = [
+        sensor_loop(sensors, infer, activation_tracker, hr_tracker, motion_tracker),
+        output_loop(leds, dmx, config["leds"]["num_pixels"], config["leds"]["zones"], config["leds"]["brightness"]),
+        palette_build_loop(),
+        server.start_server(host=config["server"]["host"], port=config["server"]["port"]),
+    ]
+
     try:
-        # Run all four concurrently. gather() waits for all to finish
+        # Run all tasks concurrently. gather() waits for all to finish
         # (they won't — they're infinite loops).
-        await asyncio.gather(
-            sensor_loop(sensors, infer, activation_tracker, hr_tracker, motion_tracker),
-            led_loop(leds, config["leds"]["num_pixels"], config["leds"]["zones"], config["leds"]["brightness"]),
-            palette_build_loop(),
-            server.start_server(host=config["server"]["host"], port=config["server"]["port"]),
-        )
+        await asyncio.gather(*tasks)
     finally:
         # Ctrl+C cancels this coroutine at whatever await it's sitting on -
         # that raises right here, past the gather, so this always runs
@@ -467,6 +537,8 @@ async def main():
         # holds whatever colour it last received (APA102 chips have no
         # "power off" tied to the SPI line going quiet).
         leds.render_pixels([[0, 0, 0]] * config["leds"]["num_pixels"])
+        if dmx is not None:
+            dmx.blackout()
  
  
 if __name__ == "__main__":
