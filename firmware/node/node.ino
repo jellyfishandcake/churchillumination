@@ -54,7 +54,7 @@ static const uint16_t MQTT_BROKER_PORT = 1883;
 
 // Must be one of config.yaml's sensors.nodes.node_ids ("node1"/"node2" by
 // default - see config.py's DEFAULTS). Change and re-flash for the 2nd board.
-static const char *NODE_ID = "node1";
+static const char *NODE_ID = "node2";
 
 static const char *TOPIC_PREFIX = "esp32";
 static const unsigned long PUBLISH_INTERVAL_MS = 200;  // 5Hz - plenty for ambient sensing, keeps WiFi/MQTT traffic light
@@ -72,15 +72,23 @@ PubSubClient mqtt_client(wifi_client);
 void ensureWifiConnected() {
   if (WiFi.status() == WL_CONNECTED) return;
 
-  Serial.print("[wifi] connecting");
+  Serial.print("[wifi] connecting...");
+  // Force the WiFi stack to fully drop any in-progress/stuck state before
+  // reconfiguring - without this, a previous attempt that didn't cleanly
+  // resolve can still make the following WiFi.begin() fail with "sta is
+  // connecting, cannot set config", even with waitForConnectResult() below.
+  // This is a known, still-not-fully-fixed race in recent Arduino-ESP32
+  // core versions (see e.g. espressif/arduino-esp32#7095) - disconnect()
+  // first is the documented workaround.
+  WiFi.disconnect();
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  unsigned long start = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) {
-    delay(250);
-    Serial.print(".");
-  }
-  Serial.println(WiFi.status() == WL_CONNECTED ? " connected" : " failed, will retry next loop");
+  // waitForConnectResult() blocks until THIS attempt fully resolves (success
+  // or failure) before returning, instead of a manual delay()-loop that can
+  // give up and let the next loop() call WiFi.begin() again while the
+  // previous attempt is still resolving in the background.
+  auto result = WiFi.waitForConnectResult(15000);
+  Serial.println(result == WL_CONNECTED ? " connected" : " failed, will retry next loop");
 }
 
 void ensureMqttConnected() {
