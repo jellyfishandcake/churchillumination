@@ -49,7 +49,7 @@ static const char *WIFI_PASSWORD = "iamanode123";
 // The Pi's LAN IP (not "localhost" - this board isn't the Pi). Find it on
 // the Pi with `hostname -I`. Must match the mosquitto listener you set up
 // (listener 1883 0.0.0.0 in /etc/mosquitto/conf.d/churchillumination.conf).
-static const char *MQTT_BROKER_HOST = "10.252.220.123";
+static const char *MQTT_BROKER_HOST = "10.42.0.1";
 static const uint16_t MQTT_BROKER_PORT = 1883;
 
 // Must be one of config.yaml's sensors.nodes.node_ids ("node1"/"node2" by
