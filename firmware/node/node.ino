@@ -147,8 +147,8 @@ void setupCamera() {
   config.pin_pwdn = -1;
   config.pin_reset = -1;
   config.pin_xclk = 10;
-  config.pin_siod = 40;
-  config.pin_sioc = 39;
+  config.pin_sccb_sda = 40;
+  config.pin_sccb_scl = 39;
   config.pin_d7 = 48;
   config.pin_d6 = 11;
   config.pin_d5 = 12;
