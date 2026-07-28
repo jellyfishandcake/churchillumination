@@ -201,6 +201,47 @@ class OrganicTwinkleEffect:
         return np.clip(frame, 0, 255).astype(np.uint8)
 
 
+class ReactiveGlowEffect:
+    """A single evolving colour that reacts directly to intensity - no
+    positional/spatial computation at all, unlike OrganicWaveEffect/
+    OrganicCometEffect (which vary colour *across pixel positions*, and so
+    have nothing meaningful to do on a single-pixel DMX zone - or in
+    organic_comet's case, a genuine bug there: its "head" and "next" pixel
+    indices collide onto the same single cell when n_pixels=1, injecting
+    an artificially high trail value every tick that fights the decay and
+    reads as "always creeping bright" rather than a clean reactive flash).
+    Built for a single DMX fixture - one point of light, not a strip -
+    where a positional wave/comet effect literally has no "position" to
+    vary across.
+
+    Idle sits near the palette's cool/low end at a dim background level.
+    Intensity pushes toward the palette's hot/bright end and brighter.
+    Attack and decay are asymmetric on purpose: fast attack so a real
+    shake/sound spike reads as an immediate response, slower decay so it
+    eases back rather than snapping off - a sense of continuity between
+    old and new state, not a jarring cut."""
+
+    def __init__(self, n_pixels, palette, attack=0.5, decay=0.08, idle_level=0.1):
+        self.n = n_pixels
+        self.lut = _palette_lut(palette)
+        self.attack = attack
+        self.decay = decay
+        self.idle_level = idle_level
+        self.level = idle_level
+
+    def step(self, intensity: float = 0.0):
+        intensity = min(max(intensity, 0.0), 1.0)
+        target = self.idle_level + (1.0 - self.idle_level) * intensity
+        rate = self.attack if target > self.level else self.decay
+        self.level += (target - self.level) * rate
+
+        index = int(self.level * (len(self.lut) - 1))
+        color = self.lut[index].astype(float)
+        brightness = 0.25 + 0.75 * self.level
+        frame = np.tile(color * brightness, (self.n, 1))
+        return np.clip(frame, 0, 255).astype(np.uint8)
+
+
 class PulseEffect:
     """Colour AND brightness both sweep along the palette by how "deep" into
     the current beat's flash we are - idle sits near the palette's first
