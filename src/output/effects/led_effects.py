@@ -86,7 +86,7 @@ class OrganicWaveEffect:
     brightness boost where the layers happen to agree - a cheap stand-in
     for Pacifica's 'whitecaps' highlight pass."""
 
-    def __init__(self, n_pixels, palette, seed=0, speed=0.006, scale=0.05, highlight=True):
+    def __init__(self, n_pixels, palette, seed=0, speed=0.03, scale=0.05, highlight=True):
         self.n = n_pixels
         self.lut = _palette_lut(palette)
         self.seed = seed
@@ -97,8 +97,17 @@ class OrganicWaveEffect:
 
     def step(self, intensity: float = 1.0):
         """intensity is the current activity_level (0..1) - quiet rooms get
-        a slower, dimmer flow; lively rooms get a faster, brighter one."""
-        speed_scale = scaled(intensity, 0.3, 1.2)
+        a slower, dimmer flow; lively rooms get a faster, brighter one.
+        speed_scale's floor raised from 0.3 to 0.8 (2026-07-28) - on a
+        single-pixel DMX zone (one fixture, no spatial extent for the wave
+        to move across - see this effect's use on n_pixels=1 output.py
+        zones) the ORIGINAL calm-ambient-strip pacing read as "a static
+        block of colour" rather than alive, since there's no positional
+        variation to compensate for a slow time-evolution the way a whole
+        strip has. Base `speed` bumped 0.006->0.03 for the same reason -
+        still scales with intensity same as before, just faster at every
+        point on that scale."""
+        speed_scale = scaled(intensity, 0.8, 2.0)
         brightness_scale = scaled(intensity, 0.3, 1.2)  # was 0.4-1.2 (too little contrast), then 0.15-1.2 (too dim)
 
         x = np.arange(self.n)

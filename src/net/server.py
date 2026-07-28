@@ -12,12 +12,24 @@ http://localhost:8000 in a browser — no separate web server needed.
 """
 import asyncio
 import json
+import logging
 import pathlib
 import re
 from http import HTTPStatus
 import websockets
 from websockets.http11 import Response
 from websockets.datastructures import Headers
+
+# websockets logs a full "opening handshake failed" traceback at ERROR level
+# (see its own server.py: self.logger.error("opening handshake failed",
+# exc_info=True)) any time a client's handshake request is malformed - e.g. a
+# browser tab reconnecting with a stale keep-alive connection after a
+# restart, which sends a Connection header the strict RFC6455 check
+# rejects. That's a routine, harmless per-connection rejection (the
+# connection is dropped, nothing else is affected), not a real application
+# error, so it's noise worth quieting rather than something to "fix" - the
+# underlying malformed request isn't actionable from our side anyway.
+logging.getLogger("websockets.server").setLevel(logging.CRITICAL)
  
 # The "shared state" the pipeline updates and the server reads.
 # Kept as a simple module-level dict so main.py can mutate it directly.
