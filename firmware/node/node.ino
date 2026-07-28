@@ -7,24 +7,28 @@
 //   topic:   esp32/<NODE_ID>/sense
 //   payload: {"loudness": 0.4, "motion": 0.1, "presence": 0.0}\n  (JSON)
 //
-// Camera note (see project decision - OV2640 now, thermal later):
-// This board's bundled camera is a regular RGB OV2640, NOT the MLX90640
-// thermal camera the central Pi sensor (motion.py) uses. Using it for
-// frame-diff motion here is a deliberate, temporary dev/testing choice -
-// same "not deployment hardware" caveat motion.py's own webcam fallback
-// already carries. Before this node is shown to the public, swap in an
-// MLX90640 thermal breakout and rewrite section 3 below to match motion.py's
-// approach (temperature-delta frame diff, not RGB-brightness frame diff).
+// Camera note (decision 2026-07-28 - supersedes the earlier OV2640-now/
+// thermal-later plan): this board no longer uses its bundled RGB OV2640 at
+// all - swapped for a Grove AMG8833 thermal camera (Panasonic Grid-EYE,
+// 8x8 = 64 pixels), matching the central Pi sensor's (motion.py) approach
+// of an anonymised heat-blob frame-diff rather than a recognisable image -
+// see CLAUDE.md / node-camera-privacy-decision. Lower resolution than the
+// central MLX90640 (32x24 = 768 pixels), but the same underlying idea, and
+// far cheaper/easier to wire (Grove's standard 4-pin connector).
 //
-// PIR (presence) is NOT wired to this board yet - section 4 is a clearly
-// marked placeholder returning 0.0 until a PIR is physically attached.
+// PIR (presence) decision 2026-07-28: no PIR on the node boards at all
+// (not just "not yet wired" - a deliberate permanent choice). Section 4
+// below derives presence from the same thermal motion signal instead of a
+// separate sensor - see that section's own comment for why that's a
+// reasonable substitute, not just a stand-in for a missing part.
 //
 // Setup:
 //   1. Arduino IDE > Boards Manager > install "esp32" (Espressif's package -
 //      provides the XIAO_ESP32S3 board entry).
-//   2. Library Manager > install "PubSubClient" (by Nick O'Leary).
-//      ESP_I2S and esp_camera ship with the esp32 board package - no
-//      separate install needed for those two.
+//   2. Library Manager > install "PubSubClient" (by Nick O'Leary) AND
+//      "Grove IR Matrix Temperature sensor AMG8833" (by Seeed Studio).
+//      ESP_I2S ships with the esp32 board package - no separate install
+//      needed for that one.
 //   3. Tools > Board > XIAO_ESP32S3, matching port.
 //   4. Fill in WIFI_SSID / WIFI_PASSWORD / MQTT_BROKER_HOST / NODE_ID below.
 //   5. Upload. Flashing/download-mode details are the same as the M5Stick
@@ -37,7 +41,7 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <ESP_I2S.h>
-#include "esp_camera.h"
+#include "Seeed_AMG8833_driver.h"
 
 // ---------------------------------------------------------------------------
 // 0. Fill in before flashing
@@ -136,93 +140,82 @@ float readLoudness() {
 }
 
 // ---------------------------------------------------------------------------
-// 3. Camera (motion, via RGB frame-diff - see the OV2640/thermal note above)
+// 3. Thermal camera (motion, via temperature-delta frame-diff)
 // ---------------------------------------------------------------------------
 // Same frame-diff principle as motion.py's central MotionSensor: grab a
-// grayscale frame, compare to the previous one, mean absolute difference =
-// how much changed. Small resolution (QQVGA) keeps this cheap enough to run
-// alongside WiFi/MQTT/mic on one small MCU.
+// frame of temperatures, compare to the previous one, mean absolute change
+// (in degrees C) = how much changed - see this file's top-of-file comment
+// for why this replaced the OV2640 RGB approach entirely.
+//
+// I2C address note: the Seeed_AMG8833 library's own AMG8833() constructor
+// defaults to 0x68 (its DEFAULT_IIC_ADDR) - but the Grove AMG8833 board's
+// actual out-of-box default is 0x69 (0x68 only applies if you've soldered
+// the board's own "Addr" jumper, per Seeed's wiki). Passed explicitly below
+// rather than trusting the library's default - a wrong hardcoded I2C
+// address has bitten this project before (the MAX30102 heart-rate sensor,
+// see src/sensing/heart_rate.py).
 
-static const framesize_t CAMERA_FRAME_SIZE = FRAMESIZE_QQVGA;  // 160x120
-static const float MOTION_SENSITIVITY = 8.0f;  // placeholder - tune once this board is actually observed, same as motion.py's webcam_sensitivity
+static const uint8_t THERMAL_I2C_ADDR = 0x69;
+// Placeholder - tune once this board is actually observed, same as every
+// other sensitivity constant in this file. Starting from motion.py's own
+// MotionSensor default since both operate on the same "mean pixel-to-pixel
+// change, in degrees C" scale - despite the very different pixel counts
+// (64 here vs 768 centrally), the per-pixel temperature-delta magnitude a
+// moving warm body produces shouldn't differ much, so it's a reasonable
+// starting point rather than an arbitrary guess.
+static const float MOTION_SENSITIVITY = 10.0f;
 
-static uint8_t *prev_frame = nullptr;
-static size_t prev_frame_len = 0;
-static bool camera_ok = false;
+AMG8833 thermal_sensor(THERMAL_I2C_ADDR);
+static float prev_frame[PIXEL_NUM] = {0};
+static bool have_prev_frame = false;
+static bool thermal_ok = false;
 
-void setupCamera() {
-  camera_config_t config = {};
-  config.pin_pwdn = -1;
-  config.pin_reset = -1;
-  config.pin_xclk = 10;
-  config.pin_sccb_sda = 40;
-  config.pin_sccb_scl = 39;
-  config.pin_d7 = 48;
-  config.pin_d6 = 11;
-  config.pin_d5 = 12;
-  config.pin_d4 = 14;
-  config.pin_d3 = 16;
-  config.pin_d2 = 18;
-  config.pin_d1 = 17;
-  config.pin_d0 = 15;
-  config.pin_vsync = 38;
-  config.pin_href = 47;
-  config.pin_pclk = 13;
-  config.xclk_freq_hz = 20000000;
-  config.ledc_timer = LEDC_TIMER_0;
-  config.ledc_channel = LEDC_CHANNEL_0;
-  config.pixel_format = PIXFORMAT_GRAYSCALE;  // raw brightness bytes - simplest possible frame-diff input
-  config.frame_size = CAMERA_FRAME_SIZE;
-  config.fb_count = 2;
-  config.grab_mode = CAMERA_GRAB_LATEST;
-  config.fb_location = CAMERA_FB_IN_PSRAM;
-
-  esp_err_t err = esp_camera_init(&config);
-  if (err != ESP_OK) {
-    Serial.printf("[camera] init failed (0x%x) - motion will read 0.0\n", err);
-    camera_ok = false;
+void setupThermalCamera() {
+  if (thermal_sensor.init() != 0) {
+    Serial.println("[thermal] init failed - motion will read 0.0");
+    thermal_ok = false;
     return;
   }
-  camera_ok = true;
+  thermal_ok = true;
 }
 
 float readMotion() {
-  if (!camera_ok) return 0.0f;
+  if (!thermal_ok) return 0.0f;
 
-  camera_fb_t *fb = esp_camera_fb_get();
-  if (!fb) return 0.0f;
+  float frame[PIXEL_NUM];
+  thermal_sensor.read_pixel_temperature(frame);
 
   float motion = 0.0f;
-  if (prev_frame != nullptr && prev_frame_len == fb->len) {
-    uint32_t diff_sum = 0;
-    for (size_t i = 0; i < fb->len; i++) {
-      diff_sum += abs((int)fb->buf[i] - (int)prev_frame[i]);
+  if (have_prev_frame) {
+    float diff_sum = 0.0f;
+    for (int i = 0; i < PIXEL_NUM; i++) {
+      diff_sum += fabs(frame[i] - prev_frame[i]);
     }
-    float mean_diff = (float)diff_sum / fb->len;  // 0..255 average brightness change
-    motion = min(1.0f, (mean_diff / 255.0f) * MOTION_SENSITIVITY);
+    float mean_diff = diff_sum / PIXEL_NUM;  // average change, in degrees C
+    motion = min(1.0f, mean_diff * MOTION_SENSITIVITY);
   }
 
-  if (prev_frame == nullptr || prev_frame_len != fb->len) {
-    free(prev_frame);
-    prev_frame = (uint8_t *)malloc(fb->len);
-    prev_frame_len = fb->len;
-  }
-  memcpy(prev_frame, fb->buf, fb->len);
-
-  esp_camera_fb_return(fb);
+  memcpy(prev_frame, frame, sizeof(frame));
+  have_prev_frame = true;
   return motion;
 }
 
 // ---------------------------------------------------------------------------
-// 4. PIR (presence) - PLACEHOLDER, not wired to this board yet
+// 4. Presence - derived from thermal motion, since this board has no PIR
 // ---------------------------------------------------------------------------
-// Once a PIR is attached, replace this with a digitalRead() on whatever GPIO
-// it's wired to (same 1.0/0.0 convention as the Pi's own pir.py). Left as a
-// flat 0.0 rather than reading an unconnected/floating pin, which would
-// produce garbage "presence" spikes instead of a clean absence of data.
+// Decision 2026-07-28: no PIR on the node boards at all - not a stand-in
+// for a missing part, a deliberate choice. This isn't as much of a
+// downgrade as it sounds: a PIR is itself fundamentally a motion/change
+// detector (it doesn't see a person standing perfectly still either), so
+// "thermal motion is above a floor" is the same underlying principle a PIR
+// would have given, just derived from the sensor this board already has
+// rather than a second dedicated part. PRESENCE_MOTION_THRESHOLD is a
+// placeholder - tune once this board is actually observed.
 
-float readPresence() {
-  return 0.0f;  // TODO: wire a PIR to a GPIO and read it here
+static const float PRESENCE_MOTION_THRESHOLD = 0.15f;
+
+float presenceFromMotion(float motion) {
+  return motion > PRESENCE_MOTION_THRESHOLD ? 1.0f : 0.0f;
 }
 
 // ---------------------------------------------------------------------------
@@ -234,7 +227,7 @@ void setup() {
   delay(1000);  // let the Serial console catch up before the first prints
 
   setupMic();
-  setupCamera();
+  setupThermalCamera();
   mqtt_client.setServer(MQTT_BROKER_HOST, MQTT_BROKER_PORT);
 }
 
@@ -250,7 +243,7 @@ void loop() {
 
   float loudness = readLoudness();
   float motion = readMotion();
-  float presence = readPresence();
+  float presence = presenceFromMotion(motion);
 
   char payload[128];
   snprintf(payload, sizeof(payload),

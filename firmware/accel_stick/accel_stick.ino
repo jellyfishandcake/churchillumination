@@ -45,11 +45,18 @@
 // used to compute acceleration on the Pi side.
 static constexpr float BASELINE_G = 1.0f;
 
-// Multiplies the raw g-deviation before clamping to [0, 1] - a placeholder
-// until real hardware is in hand to tune against (how hard a "shake"
-// actually needs to be before main.py's motion_tracker should treat it as
-// a burst - see MOTION_BURST_THRESHOLD in main.py).
-static constexpr float SENSITIVITY = 1.0f;
+// Multiplies the raw g-deviation before clamping to [0, 1]. Was 1.0 (an
+// untuned placeholder) - lowered after real-hardware feedback: at 1.0, a
+// full [0,1] range needs a full 1g deviation from baseline (magnitude
+// reaching 2g or 0g), which an ordinary hand-shake blows past almost
+// instantly (real shakes routinely spike to 2-3g+ momentarily) - so both
+// the screen bar (section 3) and the acceleration value itself pinned to
+// max for nearly any real shake instead of scaling smoothly. Lower value
+// = harder shake needed to reach 1.0, same [0, 1] contract either way for
+// accel_stick.py and main.py's MOTION_BURST_THRESHOLD - still a
+// placeholder in the sense that the exact number is feel, not physics,
+// just a much closer starting point than 1.0 was.
+static constexpr float SENSITIVITY = 0.35f;
 
 // ~20Hz while actively held, matching the Pi's own sensor_loop rate. Slows
 // down automatically while idle - see section 4.
