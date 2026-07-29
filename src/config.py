@@ -22,9 +22,11 @@ DEFAULTS = {
         # left to raise there. This is the actual "make it brighter" knob:
         # >1.0 boosts (clipped to 255 per channel, so very bright pixels
         # can clip/flatten rather than keep scaling), 1.0 leaves effects'
-        # own output untouched, <1.0 dims everything. Only affects `led`
-        # zones - a `dmx` zone's own dimmer channel (if its layout has one)
-        # is the equivalent knob there, see each fixture's `channels`.
+        # own output untouched, <1.0 dims everything. Applies to `dmx` zones
+        # too (as of the multi-segment output_loop rework), same post-gamma
+        # clip-not-rescale behaviour - a fixture's own dimmer channel (if
+        # its mode has one, see its `channels` config) stacks on top of
+        # this, not instead of it.
         "brightness": 1.4,
         # Named sections of the installation, each running its own
         # effect+palette, driven by one or more named sensor signals (see

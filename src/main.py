@@ -399,6 +399,15 @@ async def output_loop(leds, dmx, num_pixels, zones_config, brightness: float = 1
                 led_frames[name] = frame
             elif output["type"] == "dmx" and dmx_universe is not None:
                 graded_frame = apply_gamma(frame)
+                if brightness != 1.0:
+                    # Same post-gamma multiplier the led strip gets below -
+                    # previously only applied there, so a dmx zone never got
+                    # any louder no matter how high leds.brightness was set.
+                    # Clips (not rescales) for the same reason as the led
+                    # path: a boosted highlight should flatten toward the
+                    # fixture's actual max, not dim everything else to
+                    # compensate.
+                    graded_frame = np.clip(graded_frame.astype(np.float32) * brightness, 0, 255).astype(np.uint8)
                 channels_layout = output["channels"]
                 # Segment i's channels sit right after segment i-1's, in the
                 # same order tools/test_dmx.py's --start probing confirms
