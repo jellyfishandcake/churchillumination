@@ -86,12 +86,22 @@ class OrganicWaveEffect:
     brightness boost where the layers happen to agree - a cheap stand-in
     for Pacifica's 'whitecaps' highlight pass."""
 
-    def __init__(self, n_pixels, palette, seed=0, speed=0.03, scale=0.05, highlight=True):
+    def __init__(self, n_pixels, palette, seed=0, speed=0.03, scale=None, highlight=True):
         self.n = n_pixels
         self.lut = _palette_lut(palette)
         self.seed = seed
         self.speed = speed
-        self.scale = scale
+        # scale is "noise-units per pixel" - a fixed 0.05 (the old default)
+        # was tuned for a several-dozen-pixel strip. At n=8 (a segmented DMX
+        # bar) x*scale only spans ~0.4 noise-units total across the whole
+        # zone - nowhere near one full noise cell (~1 unit) - so every
+        # segment samples almost the same point in the noise field and
+        # reads as one solid colour instead of a flowing wave. Default now
+        # targets ~2.5 visible wave cycles across however many pixels this
+        # zone actually has, so it looks like a wave whether it's an
+        # 8-segment DMX bar or a 60-pixel strip - pass scale explicitly to
+        # override the cycle count.
+        self.scale = scale if scale is not None else 2.5 / max(n_pixels, 1)
         self.highlight = highlight
         self.t = 0.0
 
