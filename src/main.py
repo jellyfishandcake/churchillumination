@@ -329,10 +329,12 @@ async def output_loop(leds, dmx, num_pixels, zones_config, brightness: float = 1
     for why they used to be separate. 20 Hz.
 
     Every zone still runs its own effect+palette
-    (server.runtime_settings["zones"][name], set from admin.html's Zones
-    tab for `led` zones - `dmx` zones aren't wired into that dashboard yet,
-    see the output.type=="dmx" branch below) at one or more named
-    intensities pulled from its own sensor signals (zone["source"],
+    (server.runtime_settings["zones"][name], live-swappable from admin.html's
+    Zones tab for both `led` and `dmx` zones - see the output.type=="dmx"
+    branch below for how a dmx zone's frame separately reaches
+    server.latest["dmx_frame"] for its own dashboard swatch, since it has no
+    slot in led_frame) at one or more named intensities pulled from its own
+    sensor signals (zone["source"],
     resolved each tick by _resolve_sources and passed to effect.step() as
     **kwargs). Per-zone effect instances are only rebuilt when that zone's
     (effect, palette) pair actually changes - effect objects hold animation
@@ -363,6 +365,7 @@ async def output_loop(leds, dmx, num_pixels, zones_config, brightness: float = 1
 
     while True:
         led_frames = {}  # zone name -> frame, assembled into the full strip below, in led_ranges' order
+        dmx_frames = {}  # zone name -> graded frame, published for admin.js's dmx zone swatches (not part of led_frame - dmx zones have no slot there)
         dmx_universe = [0] * dmx.universe_size if dmx is not None else None
 
         for zone in zones_config:
@@ -408,6 +411,7 @@ async def output_loop(leds, dmx, num_pixels, zones_config, brightness: float = 1
                     # fixture's actual max, not dim everything else to
                     # compensate.
                     graded_frame = np.clip(graded_frame.astype(np.float32) * brightness, 0, 255).astype(np.uint8)
+                dmx_frames[name] = graded_frame
                 channels_layout = output["channels"]
                 # Segment i's channels sit right after segment i-1's, in the
                 # same order tools/test_dmx.py's --start probing confirms
@@ -434,6 +438,11 @@ async def output_loop(leds, dmx, num_pixels, zones_config, brightness: float = 1
 
         leds.render_pixels(led_frame)
         server.latest["led_frame"] = led_frame
+        # {zone_name: [[r,g,b], ...]} - separate from led_frame (which is one
+        # flat concatenated strip) since dmx zones don't share that strip's
+        # pixel space. admin.js paints each dmx zone's swatch straight from
+        # here instead of slicing led_frame by offset.
+        server.latest["dmx_frame"] = {name: frame.tolist() for name, frame in dmx_frames.items()}
         if dmx_universe is not None:
             dmx.send_channels(dmx_universe)
 
@@ -502,16 +511,22 @@ async def main():
         # so the browser can build one card per zone, slice led_frame into
         # per-zone swatches, and show a live readout of what's driving each
         # zone, without duplicating the pixel-range/source-resolution logic
-        # output_loop already does. "dmx" zones are deliberately left out:
-        # admin.js's swatch slicing walks led_frame by zone.pixels in order,
-        # and a dmx zone has neither a pixel count nor a slot in led_frame -
-        # including it here would desync every zone's swatch after it. DMX
-        # zones' effect/palette are config-only for now (edit config.yaml +
-        # restart), not yet live-swappable from the dashboard - see
-        # output_loop's docstring.
+        # output_loop already does. "dmx" zones are kept in a separate list
+        # below (dmx_zones) rather than mixed into this one: admin.js's
+        # swatch slicing here walks led_frame by zone.pixels in order, and a
+        # dmx zone has no slot in led_frame at all - mixing it in would
+        # desync every led zone's swatch after it.
         "zones": [
             {"name": z["name"], "pixels": z["output"]["pixels"], "source": z["source"]}
             for z in config["leds"]["zones"] if z["output"]["type"] == "led"
+        ],
+        # Same shape, for "dmx" zones - admin.js paints these from
+        # server.latest["dmx_frame"][name] instead (see output_loop),
+        # live-swappable effect/palette same as led zones (set_zone_effect
+        # is zone-name-generic server-side - see server.py's ADMIN_ACTIONS).
+        "dmx_zones": [
+            {"name": z["name"], "pixels": _dmx_zone_pixel_count(z["output"]), "source": z["source"]}
+            for z in config["leds"]["zones"] if z["output"]["type"] == "dmx"
         ],
     }
     server.latest["effects"] = list(registry.EFFECTS.keys())
