@@ -10,9 +10,16 @@
 // model.
 //
 // Wire protocol (see accel_stick.py's docstring for the Pi-side contract):
-//   {"acceleration": 0.3, "battery_pct": 87}\n
+//   {"acceleration": 0.3, "direction": -0.6, "battery_pct": 87}\n
 // One JSON object per line, "acceleration" in [0, 1] - same "deviation from
 // 1g at rest" convention the Pi-side sensors use (see the old sense_hat.py).
+// "direction" in [-1, 1] - which way the stick is currently leaning/swinging,
+// not a true swing trajectory (that would need integrating velocity, which
+// drifts badly on a cheap IMU without a fusion filter). Instead: whichever
+// horizontal axis (X or Y) currently has the larger deviation from rest
+// gives its sign, scaled by the same SENSITIVITY as acceleration. 0 = at
+// rest/centred. Good enough for "which way did you just shake it" - not
+// good enough for tracking absolute position over time.
 // "battery_pct" is extra - accel_stick.py only reads "acceleration" today
 // (see its json.loads(...)["acceleration"] line), so this field is ignored
 // Pi-side for now, not a breaking change - just future-proofing for a
@@ -62,10 +69,18 @@ static constexpr float SENSITIVITY = 0.35f;
 // down automatically while idle - see section 4.
 static constexpr unsigned long ACTIVE_SEND_INTERVAL_MS = 50;
 
-// Reads the IMU and returns the current shake magnitude, already clamped to
-// [0, 1]. Pure function of the sensor - no side effects, so sections 2-4
-// can all call it without needing to coordinate with each other.
-float readAcceleration() {
+// Bundles the two numbers derived from one IMU read, so callers don't
+// re-read the IMU twice per tick just to get both.
+struct AccelReading {
+  float acceleration;  // [0, 1] - shake magnitude, unsigned
+  float direction;     // [-1, 1] - which way it's currently leaning, signed
+};
+
+// Reads the IMU and returns the current shake magnitude + direction, already
+// clamped to their respective ranges. Pure function of the sensor - no side
+// effects, so sections 2-4 can all call it without needing to coordinate
+// with each other.
+AccelReading readAcceleration() {
   float ax, ay, az;
   M5.Imu.getAccel(&ax, &ay, &az);  // values in g; self-refreshes internally
 
@@ -73,18 +88,29 @@ float readAcceleration() {
   float acceleration = fabsf(magnitude - BASELINE_G) * SENSITIVITY;
   if (acceleration > 1.0f) acceleration = 1.0f;
   if (acceleration < 0.0f) acceleration = 0.0f;
-  return acceleration;
+
+  // Whichever horizontal axis (X or Y) is deviating from rest the most,
+  // signed - Z excluded since held roughly upright it mostly just reads
+  // gravity, not side-to-side swing. Same SENSITIVITY scale as acceleration
+  // so the two stay comparable, but this is a snapshot of current lean, not
+  // an integrated trajectory (see the wire-protocol comment up top).
+  float dominant = (fabsf(ax) >= fabsf(ay)) ? ax : ay;
+  float direction = dominant * SENSITIVITY;
+  if (direction > 1.0f) direction = 1.0f;
+  if (direction < -1.0f) direction = -1.0f;
+
+  return {acceleration, direction};
 }
 
-void sendReading(float acceleration, int battery_pct) {
+void sendReading(float acceleration, float direction, int battery_pct) {
   if (battery_pct >= 0) {
-    Serial.printf("{\"acceleration\": %.3f, \"battery_pct\": %d}\n", acceleration, battery_pct);
+    Serial.printf("{\"acceleration\": %.3f, \"direction\": %.3f, \"battery_pct\": %d}\n", acceleration, direction, battery_pct);
   } else {
     // Unknown/unavailable battery reading (e.g. running off USB with no
     // cell fitted) - omit the field entirely rather than send a fake -1,
     // same "only include a key when it's actually valid" pattern
     // heart_rate.py's spo2 field uses on the Pi side.
-    Serial.printf("{\"acceleration\": %.3f}\n", acceleration);
+    Serial.printf("{\"acceleration\": %.3f, \"direction\": %.3f}\n", acceleration, direction);
   }
 }
 
@@ -200,11 +226,11 @@ void loop() {
   if (now - last_send >= send_interval) {
     last_send = now;
 
-    float acceleration = readAcceleration();
+    AccelReading reading = readAcceleration();
     updateBatteryReading(now);
-    send_interval = updateIdlePowerSave(acceleration, now);  // may flip display_asleep for next loop
-    updateScreen(acceleration, display_asleep);
-    sendReading(acceleration, cached_battery_pct);
+    send_interval = updateIdlePowerSave(reading.acceleration, now);  // may flip display_asleep for next loop
+    updateScreen(reading.acceleration, display_asleep);
+    sendReading(reading.acceleration, reading.direction, cached_battery_pct);
   }
 
   M5.update();  // keeps M5Unified's internal button/touch state fresh

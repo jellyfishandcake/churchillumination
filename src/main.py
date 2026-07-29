@@ -301,18 +301,32 @@ def _fixture_channel_values(channels_layout: list, rgb) -> list:
     return values
 
 
+def _dmx_zone_pixel_count(output: dict) -> int:
+    """Segment count for a `dmx` zone - defaults to 1 (a single-colour
+    fixture/whole-bar mode) but a segment-addressable fixture (confirmed via
+    tools/test_dmx.py - see the fixture's own manual/mode, e.g. a bar whose
+    manual advertises "24 channel mode = 8 segments x RGB") sets
+    output.pixels to N, same field name/meaning as an `led` zone's pixels -
+    it's still "how many independently-addressable points of light does
+    this zone have", just realised as N consecutive 3-channel DMX groups
+    instead of N strip pixels."""
+    return output.get("pixels", 1)
+
+
 async def output_loop(leds, dmx, num_pixels, zones_config, brightness: float = 1.0):
     """Step every zone's selected effect once, then route each zone's frame
     to whichever hardware its own `output` config points at - an `led` zone
     (output: {type: led, pixels: N}) contributes a slice of the APA102
-    strip; a `dmx` zone (output: {type: dmx, start_address, channels}) is
-    treated as a single pixel (n_pixels=1 - a DMX fixture like a
-    wall-washer bar is one addressable light, not a strip of individually-
-    controllable LEDs) and is mapped into the shared 512-channel DMX
-    universe instead. Replaces the old led_loop/dmx_loop split now that a
-    zone's hardware target is just a config field on the same zone, not a
-    reason to duplicate the whole effect-stepping loop - see CLAUDE.md/the
-    conversation that led to this for why they used to be separate. 20 Hz.
+    strip; a `dmx` zone (output: {type: dmx, start_address, channels,
+    pixels: N}) is mapped into the shared 512-channel DMX universe instead,
+    as N consecutive groups of `channels` starting at start_address (N
+    defaults to 1 - one whole-bar point of colour - for fixtures/modes with
+    no independent segments; set pixels to match a confirmed segment count
+    for one that has them, see _dmx_zone_pixel_count). Replaces the old
+    led_loop/dmx_loop split now that a zone's hardware target is just a
+    config field on the same zone, not a reason to duplicate the whole
+    effect-stepping loop - see CLAUDE.md/the conversation that led to this
+    for why they used to be separate. 20 Hz.
 
     Every zone still runs its own effect+palette
     (server.runtime_settings["zones"][name], set from admin.html's Zones
@@ -343,7 +357,8 @@ async def output_loop(leds, dmx, num_pixels, zones_config, brightness: float = 1
     # pick changes to something else and it's worth retrying.
     zone_state = {}
     for zone in zones_config:
-        n = (led_ranges[zone["name"]][1] - led_ranges[zone["name"]][0]) if zone["output"]["type"] == "led" else 1
+        output = zone["output"]
+        n = (led_ranges[zone["name"]][1] - led_ranges[zone["name"]][0]) if output["type"] == "led" else _dmx_zone_pixel_count(output)
         zone_state[zone["name"]] = (None, None, None, np.zeros((n, 3), dtype=np.uint8), False)
 
     while True:
@@ -353,7 +368,7 @@ async def output_loop(leds, dmx, num_pixels, zones_config, brightness: float = 1
         for zone in zones_config:
             name = zone["name"]
             output = zone["output"]
-            n = (led_ranges[name][1] - led_ranges[name][0]) if output["type"] == "led" else 1
+            n = (led_ranges[name][1] - led_ranges[name][0]) if output["type"] == "led" else _dmx_zone_pixel_count(output)
 
             settings = server.runtime_settings["zones"].get(name, {})
             effect_name = settings.get("effect") or zone["effect"]
@@ -383,12 +398,19 @@ async def output_loop(leds, dmx, num_pixels, zones_config, brightness: float = 1
             if output["type"] == "led":
                 led_frames[name] = frame
             elif output["type"] == "dmx" and dmx_universe is not None:
-                rgb = apply_gamma(frame)[0]
-                values = _fixture_channel_values(output["channels"], rgb)
-                start = output["start_address"] - 1  # DMX addresses are 1-based; universe list is 0-based
-                for i, value in enumerate(values):
-                    if 0 <= start + i < len(dmx_universe):
-                        dmx_universe[start + i] = value
+                graded_frame = apply_gamma(frame)
+                channels_layout = output["channels"]
+                # Segment i's channels sit right after segment i-1's, in the
+                # same order tools/test_dmx.py's --start probing confirms
+                # for the real fixture (e.g. 3 channels/segment: segment 0 =
+                # channels start_address..+2, segment 1 = the next 3, ...).
+                base = output["start_address"] - 1  # DMX addresses are 1-based; universe list is 0-based
+                for seg, rgb in enumerate(graded_frame):
+                    values = _fixture_channel_values(channels_layout, rgb)
+                    start = base + seg * len(channels_layout)
+                    for i, value in enumerate(values):
+                        if 0 <= start + i < len(dmx_universe):
+                            dmx_universe[start + i] = value
 
         ordered_led_frames = [led_frames[name] for name in led_ranges]
         full_frame = np.concatenate(ordered_led_frames, axis=0) if ordered_led_frames else np.zeros((0, 3))

@@ -43,12 +43,18 @@ DEFAULTS = {
         #     modular/reorderable panels (detachable clips) but one
         #     continuous electrical chain, so reordering them physically
         #     just means reordering the `led` zones in this list.
-        #   {type: dmx, start_address: N, channels: [...]} - a DMX512
-        #     fixture (e.g. an RGB/RGBW wall-washer bar) over a USB-DMX
-        #     interface, driven in parallel with the strip - see
+        #   {type: dmx, start_address: N, channels: [...], pixels: N} - a
+        #     DMX512 fixture (e.g. an RGB/RGBW wall-washer bar) over a
+        #     USB-DMX interface, driven in parallel with the strip - see
         #     output/dmx.py and main.py's output_loop. Needs dmx.enabled
         #     (below) set true, and the fixture's real start_address +
         #     channels checked against its own manual/DIP-switch chart.
+        #     `pixels` (default 1) is how many independently-addressable
+        #     segments the fixture has in its current mode - each one gets
+        #     its own consecutive block of `channels`, same "how many points
+        #     of light" meaning as an `led` zone's pixels. Confirm the real
+        #     count/spacing with tools/test_dmx.py's --start flag before
+        #     setting this above 1 - don't assume from a spec sheet alone.
         "zones": [
             {
                 "name": "ambient",
@@ -80,9 +86,15 @@ DEFAULTS = {
             },
             {
                 "name": "accelerometer",
-                "effect": "organic_comet", "palette": "autumn",
-                "source": {"intensity": "interactions.motion_burst"},
-                "output": {"type": "dmx", "start_address": 4, "channels": ["r", "g", "b"]},
+                "effect": "directional_wave", "palette": "autumn",
+                # direction rescaled the same way temperature/humidity are -
+                # accel_stick's raw [-1, 1] "which way it's leaning" maps to
+                # 0..1 (0.5 = centred), see DirectionalWaveEffect's docstring.
+                "source": {
+                    "intensity": "sensors.acceleration",
+                    "direction": {"path": "sensors.direction", "min": -1, "max": 1},
+                },
+                "output": {"type": "dmx", "start_address": 4, "channels": ["r", "g", "b"], "pixels": 1},
             },
         ],
     },

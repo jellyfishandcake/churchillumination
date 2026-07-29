@@ -14,19 +14,25 @@ effects take a single `intensity` kwarg (organic_wave/organic_comet/
 organic_twinkle/reactive_glow); temp_humidity_matrix takes
 `temperature`+`humidity`, plus an optional `activity` for its shimmer (see
 its own docstring); pulse takes `intensity`+`bpm` (bpm times its per-beat
-flash to the wearer's actual heart rate - see PulseEffect's docstring) - a
-zone's configured `source` dict keys must match whichever effect it's
-assigned, since led_loop calls effect.step(**sources).
+flash to the wearer's actual heart rate - see PulseEffect's docstring);
+directional_wave takes `intensity`+`direction` (a signed "which way" signal
+rescaled to 0..1 - see DirectionalWaveEffect's own docstring) - a zone's
+configured `source` dict keys must match whichever effect it's assigned,
+since led_loop calls effect.step(**sources).
 
 reactive_glow is the one to reach for on a single-pixel DMX zone
-(output.type: dmx) - organic_wave/organic_comet vary colour *across pixel
-positions*, which a single DMX fixture doesn't have (see ReactiveGlowEffect's
-own docstring for the specific bug this avoids in organic_comet's case).
+(output.type: dmx, no `pixels` set) - organic_wave/organic_comet/
+directional_wave all vary colour or position *across pixel positions*,
+which a single DMX fixture doesn't have (see ReactiveGlowEffect's own
+docstring for the specific bug this avoids in organic_comet's case).
+directional_wave is the one to reach for once that DMX zone has real
+segments (output.pixels > 1, confirmed via tools/test_dmx.py).
 """
 
 from .led_effects import (
     OrganicWaveEffect, OrganicCometEffect, OrganicTwinkleEffect,
     PulseEffect, TempHumidityMatrixEffect, ReactiveGlowEffect,
+    DirectionalWaveEffect,
 )
 
 EFFECTS = {
@@ -36,6 +42,7 @@ EFFECTS = {
     "pulse": PulseEffect,
     "temp_humidity_matrix": TempHumidityMatrixEffect,
     "reactive_glow": ReactiveGlowEffect,
+    "directional_wave": DirectionalWaveEffect,
 }
 
 # Defensive fallback if a zone's configured effect/palette name doesn't

@@ -35,8 +35,11 @@ leds:
   # See main.py's _resolve_sources/output_loop.
   #
   # A zone's source dict keys must match its chosen effect's step()
-  # parameter names - organic_wave/organic_comet/organic_twinkle/pulse all
-  # take `intensity`; temp_humidity_matrix takes `temperature`+`humidity`.
+  # parameter names - organic_wave/organic_comet/organic_twinkle/
+  # reactive_glow/directional_wave all take `intensity` (directional_wave
+  # also takes `direction`); temp_humidity_matrix takes
+  # `temperature`+`humidity`. See src/output/effects/registry.py's own
+  # docstring for the full breakdown of which effect suits which zone shape.
   #
   # `output` says which hardware the zone actually drives:
   #   {type: led, pixels: N}  - a slice of the APA102 strip (modular/
@@ -47,17 +50,22 @@ leds:
   #     web/index.html). `pixels` across all `led` zones should sum to
   #     num_pixels above; output_loop pads/clamps the last led zone if they
   #     don't, rather than crashing.
-  #   {type: dmx, start_address: N, channels: [...]} - a DMX512 fixture
-  #     (e.g. an RGB/RGBW wall-washer bar) over a USB-DMX interface, driven
-  #     in parallel with the strip - see src/output/dmx.py and main.py's
-  #     output_loop. Needs dmx.enabled below set true. Not yet live-
-  #     swappable from admin.html - edit config.yaml + restart to change a
-  #     dmx zone's effect/palette. channels lists the role of each DMX
-  #     channel in the fixture's current mode (check its manual/DIP
+  #   {type: dmx, start_address: N, channels: [...], pixels: N} - a DMX512
+  #     fixture (e.g. an RGB/RGBW wall-washer bar) over a USB-DMX interface,
+  #     driven in parallel with the strip - see src/output/dmx.py and
+  #     main.py's output_loop. Needs dmx.enabled below set true. Not yet
+  #     live-swappable from admin.html - edit config.yaml + restart to
+  #     change a dmx zone's effect/palette. channels lists the role of each
+  #     DMX channel in the fixture's current mode (check its manual/DIP
   #     switches): r/g/b/w map to colour, "dimmer" holds at 255 (many
   #     fixtures show black regardless of RGB if their master dimmer
   #     channel is 0), "strobe" holds at 0 (no strobe) - e.g.
   #     [dimmer, r, g, b] for a 4ch mode with a master dimmer channel first.
+  #     `pixels` (default 1) is the confirmed independently-addressable
+  #     segment count in that mode - each segment gets its own consecutive
+  #     block of `channels`. Only set this above 1 once you've actually
+  #     confirmed segment addressing with tools/test_dmx.py's --start
+  #     flag - don't assume it from a spec sheet.
   zones:
     - name: ambient
       effect: organic_wave       # organic_wave | organic_comet | organic_twinkle | pulse | temp_humidity_matrix
@@ -85,11 +93,12 @@ leds:
         bpm: {path: heart_rate.bpm, min: 40, max: 180}   # must match PulseEffect.BPM_RANGE
       output: {type: led, pixels: 6}
     - name: accelerometer
-      effect: organic_comet
+      effect: directional_wave   # position tracks direction, brightness/trail tracks intensity - see DirectionalWaveEffect's docstring
       palette: autumn
       source:
-        intensity: interactions.motion_burst # bool -> 1.0/0.0
-      output: {type: dmx, start_address: 4, channels: [r, g, b]}
+        intensity: sensors.acceleration                              # raw shake magnitude, 0..1
+        direction: {path: sensors.direction, min: -1, max: 1}         # signed lean/swing -> 0..1, 0.5 = centred
+      output: {type: dmx, start_address: 4, channels: [r, g, b]}   # bump start_address if it now overlaps a segmented ambient zone above
 
 # Interface-level DMX512 settings - which zones actually send to it, and
 # each fixture's start_address/channels, are configured per-zone above

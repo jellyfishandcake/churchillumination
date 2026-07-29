@@ -242,6 +242,58 @@ class ReactiveGlowEffect:
         return np.clip(frame, 0, 255).astype(np.uint8)
 
 
+class DirectionalWaveEffect:
+    """Built for a multi-segment DMX zone (e.g. an 8-segment wall-washer
+    bar, output.pixels > 1) where a signed "which way" signal should show
+    up as *where* the light is, not just how bright - the accelerometer
+    stick's `direction` reading (see accel_stick.ino/accel_stick.py).
+
+    Unlike OrganicCometEffect, position tracks `direction` directly instead
+    of drifting on its own - a shake to the left should show the light
+    shift left on THIS tick, not spend seconds travelling there. `intensity`
+    (the shake's magnitude) controls brightness/trail strength, so an idle
+    stick settles to a dim, centred glow rather than a bright comet sitting
+    wherever it last got shaken to.
+
+    `direction` arrives pre-rescaled to 0..1 by main.py's
+    _resolve_one_source (the zone's source config supplies {min: -1, max:
+    1} - see config.py's accelerometer zone) - 0 = full left, 0.5 = centre,
+    1 = full right, same convention temperature/humidity zones already use
+    for their own {min, max} rescale.
+
+    Safe at n_pixels=1 too (unlike OrganicCometEffect's collision bug
+    there): idx0 and idx1 falling on the same cell just means that cell
+    takes the max of both contributions, not an additively-reinforcing
+    value, since position here is driven directly by input each tick
+    rather than accumulating from its own last position."""
+
+    def __init__(self, n_pixels, palette, decay=0.8, background_level=0.08):
+        self.n = n_pixels
+        self.lut = _palette_lut(palette)
+        self.decay = decay
+        self.background = self.lut[0] * background_level
+        self.trail = np.zeros(n_pixels)
+
+    def step(self, intensity: float = 0.0, direction: float = 0.5):
+        intensity = min(max(intensity, 0.0), 1.0)
+        direction = min(max(direction, 0.0), 1.0)
+
+        pos = direction * (self.n - 1)
+        idx0 = int(np.floor(pos))
+        idx1 = min(idx0 + 1, self.n - 1)
+        frac = pos - idx0
+
+        self.trail *= self.decay
+        head_strength = scaled(intensity, 0.15, 1.0)
+        self.trail[idx0] = max(self.trail[idx0], (1 - frac) * head_strength)
+        self.trail[idx1] = max(self.trail[idx1], frac * head_strength)
+
+        palette_index = int(direction * (len(self.lut) - 1))
+        color = self.lut[palette_index].astype(float)
+        frame = self.background[None, :] + (color - self.background)[None, :] * self.trail[:, None]
+        return np.clip(frame, 0, 255).astype(np.uint8)
+
+
 class PulseEffect:
     """Colour AND brightness both sweep along the palette by how "deep" into
     the current beat's flash we are - idle sits near the palette's first
