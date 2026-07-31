@@ -1,0 +1,29 @@
+# Disables USB autosuspend for the devices that need to deliver a
+# continuous, gapless stream with no visible failure signal if the kernel
+# power-suspends them mid-run: the mic (src/sensing/audio.py), the
+# MT7612U WiFi dongle hosting the node hotspot, the M5Stack accel stick
+# (src/sensing/accel_stick.py), and the USB-DMX interface (src/output/dmx.py).
+# Deliberately NOT applied to the terminal's mouse/keyboard - autosuspend
+# is safe there (HID remote wakeup is instant and designed for exactly
+# this) and there's no reason to give up the power saving on those.
+#
+# Install on the Pi:
+#   sudo cp 99-usb-no-autosuspend.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger
+#
+# Verify (should print "on" for each device once its rule's filled in and
+# the device is plugged in - "auto" means the rule isn't matching):
+#   cat /sys/bus/usb/devices/*/power/control
+
+# Mic (see audio.py's STALE_AFTER_SECONDS comment for the failure mode this prevents)
+SUBSYSTEM=="usb", ATTR{idVendor}=="XXXX", ATTR{idProduct}=="XXXX", TEST=="power/control", ATTR{power/control}="on"
+
+# MT7612U WiFi dongle (wlan1, hosts the node hotspot)
+SUBSYSTEM=="usb", ATTR{idVendor}=="XXXX", ATTR{idProduct}=="XXXX", TEST=="power/control", ATTR{power/control}="on"
+
+# M5Stack accel stick (USB-serial)
+SUBSYSTEM=="usb", ATTR{idVendor}=="XXXX", ATTR{idProduct}=="XXXX", TEST=="power/control", ATTR{power/control}="on"
+
+# USB-DMX interface (USB-serial, FTDI or CH340 - see dmx.py's module docstring)
+SUBSYSTEM=="usb", ATTR{idVendor}=="XXXX", ATTR{idProduct}=="XXXX", TEST=="power/control", ATTR{power/control}="on"

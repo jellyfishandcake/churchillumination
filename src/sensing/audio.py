@@ -40,6 +40,13 @@ YAMNET_LABELS_PATH = pathlib.Path(__file__).parent / "models" / "yamnet_class_ma
 # ~0.1s cadence so ordinary scheduling jitter never trips it.
 STALE_AFTER_SECONDS = 5.0
 
+# How often read() retries reopening the stream once it's gone stale - not
+# on every read() call (main.py's loop runs well over once per second, see
+# the CPU-starvation comment on _on_audio below) and not just once, since
+# the mic may come back later (a suspended USB device auto-resumes the
+# moment something tries to use it again, which reopening the stream does).
+REOPEN_RETRY_SECONDS = 5.0
+
 # Originally ran through mediapipe.tasks.python.audio.AudioClassifier, which
 # wrapped this same model with streaming/label-lookup convenience. Switched
 # to calling the .tflite file directly via ai-edge-litert because mediapipe
@@ -91,6 +98,7 @@ class AudioSensor(Sensor):
         self._classifying = False  # guards against overlapping background inference calls
         self._samples_since_classify = WINDOW_SAMPLES  # forces one right away once the buffer first fills
         self._latest_callback_at = None  # set once the stream's first callback actually lands - see read()
+        self._last_reopen_attempt_at = None  # throttles read()'s stream-recovery retries - see REOPEN_RETRY_SECONDS
 
         if Interpreter is not None and YAMNET_MODEL_PATH.is_file():
             try:
@@ -112,6 +120,16 @@ class AudioSensor(Sensor):
         self._resample_up = 1
         self._resample_down = 1
         self._stream = None
+        self._open_stream()
+
+    def _open_stream(self) -> None:
+        """(Re)opens the input stream against whatever mic is currently
+        connected. Called at construction, and again from read() once the
+        existing stream's gone stale - reopening (rather than just
+        detecting the staleness) is what actually recovers from USB power
+        management suspending the mic: accessing the device again is what
+        makes the kernel auto-resume it. See _resample_ratio's docstring
+        for why the rate's queried fresh each time rather than hardcoded."""
         try:
             native_rate = int(sd.query_devices(kind="input")["default_samplerate"])
             self._resample_up, self._resample_down = _resample_ratio(native_rate)
@@ -125,6 +143,15 @@ class AudioSensor(Sensor):
         except Exception as exc:
             print(f"[AudioSensor] couldn't open an audio input stream ({exc}) - loudness/scene readings disabled")
             self._stream = None
+
+    def _reopen_stream(self) -> None:
+        """Closes the (likely dead) existing stream and tries to open a
+        fresh one. If the mic's genuinely gone (unplugged), this just fails
+        again and read() keeps serving the mock reading until a later
+        retry succeeds."""
+        if self._stream is not None:
+            self._stream.close()  # ignore_errors=True by default
+        self._open_stream()
 
     def _classify(self, window: np.ndarray) -> None:
         """Runs off the audio callback thread (see _on_audio) - a TFLite
@@ -205,6 +232,18 @@ class AudioSensor(Sensor):
             and time.monotonic() - self._latest_callback_at > STALE_AFTER_SECONDS
         ):
             self._mark_failed(RuntimeError("no audio callback in over 5s - stream likely died silently"))
+            now = time.monotonic()
+            if (
+                self._last_reopen_attempt_at is None
+                or now - self._last_reopen_attempt_at >= REOPEN_RETRY_SECONDS
+            ):
+                self._last_reopen_attempt_at = now
+                self._reopen_stream()
+                # Deliberately not touching _latest_callback_at here: it
+                # stays stale until _on_audio actually fires again on the
+                # new stream, which is what lets the check above (and
+                # _mark_ok, below) tell a merely-reopened stream apart from
+                # one that's truly delivering audio again.
             self._mock_loudness = min(1.0, max(0.0, self._mock_loudness + random.uniform(-0.03, 0.03)))
             return {"loudness": self._mock_loudness}
 
