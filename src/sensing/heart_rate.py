@@ -41,15 +41,7 @@ REG_COLLECT_CONTROL = 0x20
 START_COLLECT = [0x00, 0x01]
 REG_HEARTBEAT_SPO2 = 0x0C
 
-# Generous physiological bounds - real human heart rate essentially never
-# falls outside this even during vigorous activity. The module's own onboard
-# MCU is supposed to report a clean 0 (see this file's top docstring) when it
-# has no valid finger lock, but a brief optical/electrical glitch (ambient
-# light, a moment right after sensor_start_collect()) can still produce a
-# spurious nonzero value that isn't a real heartbeat - the previous
-# `heartbeat != 0` check alone would accept ANY nonzero reading as genuine
-# contact, no matter how implausible. Rejecting anything outside this range
-# closes that false-activation-without-a-finger gap.
+# Generous physiological bounds to check for reasonable heart-rate readings 
 PLAUSIBLE_BPM_RANGE = (30.0, 220.0)
 
 

@@ -38,8 +38,10 @@ leds:
   # parameter names - organic_wave/organic_comet/organic_twinkle/
   # reactive_glow/directional_wave all take `intensity` (directional_wave
   # also takes `direction`); temp_humidity_matrix takes
-  # `temperature`+`humidity`. See src/output/effects/registry.py's own
-  # docstring for the full breakdown of which effect suits which zone shape.
+  # `temperature`+`humidity`; audio_reactive_wave takes
+  # `loudness`+`motion`+`env_brightness`+`ripple`; heart_rate_check_in takes
+  # `intensity`+`bpm`, same as pulse. See src/output/effects/registry.py's
+  # own docstring for the full breakdown of which effect suits which zone shape.
   #
   # `output` says which hardware the zone actually drives:
   #   {type: led, pixels: N}  - a slice of the APA102 strip (modular/
@@ -68,10 +70,13 @@ leds:
   #     flag - don't assume it from a spec sheet.
   zones:
     - name: ambient
-      effect: organic_wave       # organic_wave | organic_comet | organic_twinkle | pulse | temp_humidity_matrix
+      effect: audio_reactive_wave   # organic_wave | organic_comet | organic_twinkle | pulse | temp_humidity_matrix | directional_wave | audio_reactive_wave | heart_rate_check_in
       palette: winter            # any key in colour_palette.PALETTES / palettes.json
       source:
-        intensity: state.activity_level
+        loudness: sensors.loudness                                # picks position in the palette gradient - see AudioReactiveWaveEffect's docstring
+        motion: sensors.motion                                    # drives wave speed
+        env_brightness: {path: sensors.lux, min: 0, max: 500}     # keeps the strip visible against room light rather than reacting to loudness/motion - untested placeholder range, recalibrate on-site
+        ripple: interactions.audio_ripple                         # laughter/applause/cheering/music flash - see intelligence/audio_moments.py
       output: {type: dmx, start_address: 1, channels: [r, g, b]}
     - name: temp_humidity
       layout: matrix   # documentation/wiring metadata only - still one flat pixel range,
@@ -86,11 +91,11 @@ leds:
         contrast: {path: sensors.indoor_outdoor_temp_diff, min: 0, max: 15}   # indoor/outdoor divergence - see main.py's sensor_loop
       output: {type: led, pixels: 20}
     - name: heart_rate
-      effect: pulse   # deliberately not an organic effect - a single held colour, flashed per-beat
+      effect: heart_rate_check_in   # start/read/end check-in flow, not a continuous display - see HeartRateEffect's docstring
       palette: festive
       source:
-        intensity: heart_rate.engaged        # bool -> 1.0/0.0, gates idle glow vs beat-synced flashing
-        bpm: {path: heart_rate.bpm, min: 40, max: 180}   # must match PulseEffect.BPM_RANGE
+        intensity: heart_rate.engaged        # bool -> 1.0/0.0, rising edge starts a new reading session
+        bpm: {path: heart_rate.bpm, min: 40, max: 180}   # must match HeartRateEffect.BPM_RANGE
       output: {type: led, pixels: 6}
     - name: accelerometer
       effect: directional_wave   # position tracks direction, brightness/trail tracks intensity - see DirectionalWaveEffect's docstring

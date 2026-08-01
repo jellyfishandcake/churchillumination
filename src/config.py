@@ -60,8 +60,13 @@ DEFAULTS = {
         "zones": [
             {
                 "name": "ambient",
-                "effect": "organic_wave", "palette": "winter",
-                "source": {"intensity": "state.activity_level"},
+                "effect": "audio_reactive_wave", "palette": "winter",
+                "source": {
+                    "loudness": "sensors.loudness",
+                    "motion": "sensors.motion",
+                    "env_brightness": {"path": "sensors.lux", "min": 0, "max": 500},
+                    "ripple": "interactions.audio_ripple",
+                },
                 "output": {"type": "dmx", "start_address": 1, "channels": ["r", "g", "b"]},
             },
             {
@@ -76,8 +81,8 @@ DEFAULTS = {
             },
             {
                 "name": "heart_rate",
-                "effect": "pulse", "palette": "festive",
-                # bpm's {min, max} must match PulseEffect.BPM_RANGE in
+                "effect": "heart_rate_check_in", "palette": "festive",
+                # bpm's {min, max} must match HeartRateEffect.BPM_RANGE in
                 # led_effects.py - this is what turns the 0..1 _resolve_one_source
                 # gives every source back into the real BPM the effect flashes at.
                 "source": {

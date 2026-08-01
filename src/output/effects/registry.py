@@ -16,9 +16,13 @@ organic_twinkle/reactive_glow); temp_humidity_matrix takes
 its own docstring); pulse takes `intensity`+`bpm` (bpm times its per-beat
 flash to the wearer's actual heart rate - see PulseEffect's docstring);
 directional_wave takes `intensity`+`direction` (a signed "which way" signal
-rescaled to 0..1 - see DirectionalWaveEffect's own docstring) - a zone's
-configured `source` dict keys must match whichever effect it's assigned,
-since led_loop calls effect.step(**sources).
+rescaled to 0..1 - see DirectionalWaveEffect's own docstring);
+audio_reactive_wave takes `loudness`+`motion`+`env_brightness`+`ripple` (see
+AudioReactiveWaveEffect's own docstring); heart_rate_check_in takes
+`intensity`+`bpm`, same shape as pulse, but drives a distinct start/read/end
+check-in flow instead of a continuous display (see HeartRateEffect's own
+docstring) - a zone's configured `source` dict keys must match whichever
+effect it's assigned, since led_loop calls effect.step(**sources).
 
 reactive_glow is the one to reach for on a single-pixel DMX zone
 (output.type: dmx, no `pixels` set) - organic_wave/organic_comet/
@@ -32,7 +36,7 @@ segments (output.pixels > 1, confirmed via tools/test_dmx.py).
 from .led_effects import (
     OrganicWaveEffect, OrganicCometEffect, OrganicTwinkleEffect,
     PulseEffect, TempHumidityMatrixEffect, ReactiveGlowEffect,
-    DirectionalWaveEffect,
+    DirectionalWaveEffect, AudioReactiveWaveEffect, HeartRateEffect,
 )
 
 EFFECTS = {
@@ -43,6 +47,8 @@ EFFECTS = {
     "temp_humidity_matrix": TempHumidityMatrixEffect,
     "reactive_glow": ReactiveGlowEffect,
     "directional_wave": DirectionalWaveEffect,
+    "audio_reactive_wave": AudioReactiveWaveEffect,
+    "heart_rate_check_in": HeartRateEffect,
 }
 
 # Defensive fallback if a zone's configured effect/palette name doesn't

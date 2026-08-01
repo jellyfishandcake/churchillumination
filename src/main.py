@@ -30,6 +30,7 @@ from src.sensing.nodes import NodeSensor
 from src.sensing.weather import WeatherSensor
 from src.intelligence import rules
 from src.intelligence.activation import ActivationTracker
+from src.intelligence.audio_moments import AudioMomentTracker
 from src.intelligence import palette_jobs
 from src.net import network
 from src.output.leds import LEDStrip
@@ -116,7 +117,7 @@ def _smooth_readings(previous: dict, current: dict, alpha: float) -> dict:
     return smoothed
 
 
-async def sensor_loop(sensors, infer, activation_tracker, hr_tracker, motion_tracker):
+async def sensor_loop(sensors, infer, activation_tracker, hr_tracker, motion_tracker, audio_moment_tracker):
     """Read sensors, smooth them, compute state, publish to shared dict. 20 Hz.
 
     Each sensor now handles its own hardware failures internally — it falls
@@ -135,7 +136,10 @@ async def sensor_loop(sensors, infer, activation_tracker, hr_tracker, motion_tra
     instances (heart-rate contact, handheld-stick shake) - deliberately not
     folded into activation_tracker's ambient "activated" or into
     infer_state, since these are direct per-sensor interaction signals for
-    their own dedicated LED regions, not ambient presence.
+    their own dedicated LED regions, not ambient presence. audio_moment_tracker
+    is the same idea for a laughter/applause/cheering/music moment (see
+    intelligence/audio_moments.py) - also fed raw, not smoothed, so the
+    ambient zone's ripple overlay reacts the instant a scene's detected.
     """
     smoothed = {}
     while True:
@@ -169,6 +173,7 @@ async def sensor_loop(sensors, infer, activation_tracker, hr_tracker, motion_tra
         # trigger on, not an EMA-lagged one.
         hr_engaged = hr_tracker.update(raw.get("pulse_detected", False), now)
         motion_burst = motion_tracker.update(raw.get("acceleration", 0.0) > MOTION_BURST_THRESHOLD, now)
+        audio_ripple = audio_moment_tracker.update(raw.get("audio_scene"), raw.get("audio_scene_score", 0.0), now)
 
         smoothed = _smooth_readings(smoothed, raw, alpha)
 
@@ -202,7 +207,7 @@ async def sensor_loop(sensors, infer, activation_tracker, hr_tracker, motion_tra
         # bpm smoothed for a steadier bulb pulse rate; pulse_detected itself
         # stays raw going into hr_tracker above, same as PIR presence does.
         server.latest["heart_rate"] = {"bpm": smoothed.get("heart_rate"), "engaged": hr_engaged}
-        server.latest["interactions"] = {"motion_burst": motion_burst}
+        server.latest["interactions"] = {"motion_burst": motion_burst, "audio_ripple": audio_ripple}
         # Every sensor's smoothed reading, flat (see e.g. pir.py's docstring
         # on why sensors share one flat namespace, distinct keys). Lets a
         # zone's `source` reference any raw reading (e.g.
@@ -503,6 +508,7 @@ async def main():
     activation_tracker = ActivationTracker(timeout=config["activation"]["timeout_seconds"])
     hr_tracker = ActivationTracker(timeout=config["interaction"]["hr_contact_timeout_seconds"])
     motion_tracker = ActivationTracker(timeout=config["interaction"]["motion_burst_timeout_seconds"])
+    audio_moment_tracker = AudioMomentTracker()
 
     server.latest["leds"] = {
         "num_pixels": config["leds"]["num_pixels"],
@@ -566,7 +572,7 @@ async def main():
         print(f"[main] couldn't generate QR code (no network route?): {exc}")
 
     tasks = [
-        sensor_loop(sensors, infer, activation_tracker, hr_tracker, motion_tracker),
+        sensor_loop(sensors, infer, activation_tracker, hr_tracker, motion_tracker, audio_moment_tracker),
         output_loop(leds, dmx, config["leds"]["num_pixels"], config["leds"]["zones"], config["leds"]["brightness"]),
         palette_build_loop(),
         server.start_server(host=config["server"]["host"], port=config["server"]["port"]),

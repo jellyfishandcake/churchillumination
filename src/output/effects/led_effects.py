@@ -23,6 +23,8 @@ FastLED's Pacifica or TwinkleFox:
    frame goes to hardware - not during internal blending.
 """
 
+import collections
+
 import numpy as np
 from .colour_palette import PALETTES, _palette_lut
 
@@ -133,6 +135,97 @@ class OrganicWaveEffect:
         frame = np.clip(frame * brightness_scale, 0, 255)
         self.t += self.speed * speed_scale
         return frame.astype(np.uint8)
+
+
+class AudioReactiveWaveEffect:
+    """The ambient zone's effect: two independent, legible drivers instead
+    of the older organic_wave's single blended `intensity` (which came from
+    state.activity_level, a 0.6*loudness+0.4*motion mix - see the
+    conversation that led to this and rules.py's own docstring on why that
+    blend still exists for the dashboard mood label and other zones, just
+    isn't the right vehicle for this zone's visual response).
+
+    `loudness` picks a position in the palette gradient (same idea as
+    DirectionalWaveEffect's `direction` -> palette_index), `motion`
+    controls how fast the wave flows, `env_brightness` (from the
+    multisensor stick's lux reading) keeps the strip visible against the
+    room's own light rather than reacting to loudness/motion at all, and
+    `ripple` (see intelligence/audio_moments.py) washes a brief flash of
+    white over the wave on laughter/cheering/applause/music.
+
+    Kept as its own class rather than a modified OrganicWaveEffect, since
+    "organic_wave" is still independently selectable for any zone from the
+    dashboard's Zones tab - a zone whose source only supplies `intensity`
+    would break against a changed signature (see output_loop's
+    TypeError->hold-last-frame fallback). Reuses the same value_noise
+    machinery (see that function's own docstring for why noise beats a
+    sine wave here).
+
+    loudness's raw 0..1 value (see audio.py's own docstring on how
+    untested that mapping still is) isn't used directly as the palette
+    position - instead it's rescaled against a self-calibrating ceiling
+    (see _AdaptiveCeiling) so the palette gets explored across its full
+    range regardless of how the mic's sensitivity constant happens to be
+    tuned, rather than the whole effect spending its life squeezed into
+    one end of the gradient."""
+
+    TICK_SECONDS = 0.05
+
+    def __init__(self, n_pixels, palette, seed=0, speed=0.03, scale=None, highlight=True,
+                 ceiling_floor=0.15, ceiling_decay_per_second=0.02, noise_spread=0.3):
+        self.n = n_pixels
+        self.lut = _palette_lut(palette)
+        self.seed = seed
+        self.speed = speed
+        self.scale = scale if scale is not None else 2.5 / max(n_pixels, 1)
+        self.highlight = highlight
+        self.noise_spread = noise_spread
+        self.t = 0.0
+        self._ceiling = ceiling_floor
+        self._ceiling_floor = ceiling_floor
+        self._ceiling_decay_per_second = ceiling_decay_per_second
+
+    def step(self, loudness: float = 0.0, motion: float = 0.0, env_brightness: float = 0.5, ripple: float = 0.0):
+        speed_scale = scaled(motion, 0.8, 2.0)
+        brightness_scale = scaled(env_brightness, 0.5, 1.0)  # never fully dark - this is ambient decor, not a screen
+
+        # Self-calibrating ceiling: expands instantly on a new peak (so one
+        # loud moment immediately unlocks the top of the palette), decays
+        # slowly back down otherwise (so an earlier loud spell doesn't
+        # permanently compress everything afterwards into a narrow low
+        # band) - never below ceiling_floor, so there's always at least a
+        # usable range even in a totally silent room.
+        if loudness > self._ceiling:
+            self._ceiling = loudness
+        else:
+            self._ceiling = max(
+                self._ceiling_floor,
+                self._ceiling - self._ceiling * self._ceiling_decay_per_second * self.TICK_SECONDS,
+            )
+        loudness_pos = min(1.0, loudness / self._ceiling) if self._ceiling > 0 else 0.0
+
+        x = np.arange(self.n)
+        layer1 = value_noise(x * self.scale, np.full(self.n, self.t), seed=self.seed)
+        layer2 = value_noise(x * self.scale * 2.3 + 50, np.full(self.n, self.t * 1.7), seed=self.seed + 1)
+        combined = 0.65 * layer1 + 0.35 * layer2
+        # Anchored on loudness_pos rather than spanning the whole palette on
+        # noise alone (the old organic_wave's approach) - the noise now
+        # supplies organic wander AROUND that anchor so the wave still
+        # flows/breathes instead of snapping to a flat colour, but loudness
+        # is what actually decides which region of the palette it's in.
+        t_norm = np.clip(loudness_pos + combined * self.noise_spread, 0, 1)
+        indices = (t_norm * (len(self.lut) - 1)).astype(int)
+        frame = self.lut[indices].copy().astype(float)
+        if self.highlight:
+            agreement = np.clip(layer1 * layer2, 0, None)
+            frame = np.clip(frame + (agreement * 70)[:, None], 0, 255)
+        frame = np.clip(frame * brightness_scale, 0, 255)
+
+        if ripple > 0:
+            frame = frame + (255 - frame) * ripple * 0.8  # wash toward white without fully overriding the wave's own colour
+
+        self.t += self.speed * speed_scale
+        return np.clip(frame, 0, 255).astype(np.uint8)
 
 
 class OrganicCometEffect:
@@ -354,6 +447,124 @@ class PulseEffect:
         target = self.idle_level + (1.0 - self.idle_level) * pulse
         self.level += (target - self.level) * self.ease  # ease avoids a hard jump/flicker frame-to-frame
         frame = np.tile(self._color_at_level(self.level), (self.n, 1))
+        return np.clip(frame, 0, 255).astype(np.uint8)
+
+
+class HeartRateEffect:
+    """A "check-in" flow rather than PulseEffect's continuous contact-
+    follows-BPM display (kept as its own class/registry name for the same
+    reason AudioReactiveWaveEffect isn't a repurposed organic_wave - `pulse`
+    stays selectable elsewhere in its original shape). Four phases, cycling
+    on a *rising edge* of `intensity` (heart_rate.engaged - already
+    debounced against brief finger-contact blips by main.py's hr_tracker,
+    see its own ActivationTracker) so holding a finger down after a
+    completed reading doesn't immediately restart another one - lift and
+    reapply to take a new reading:
+
+      idle        - palette-coloured pulse at the rolling average of the
+                    last HISTORY_SIZE completed readings (falls back to a
+                    resting 70 bpm before any reading's ever completed) -
+                    the "ambient" display, not tied to live contact at all.
+      start_chime - two quick white flashes, contact just detected.
+      reading     - white pulse at the LIVE bpm for READING_SECONDS,
+                    sampling bpm for this session's average. Distinct
+                    colour from idle is the point: white unambiguously
+                    means "reading you right now, hold still".
+      end_chime   - two quick white flashes; the session's mean bpm is
+                    appended to history before returning to idle.
+
+    If contact drops during `reading` before READING_SECONDS elapses, the
+    session's abandoned (no history update, no end chime) rather than
+    recording a partial sample as if it were a real reading."""
+
+    HISTORY_SIZE = 20
+    READING_SECONDS = 4.0
+    CHIME_SECONDS = 0.5
+    TICK_SECONDS = 0.05
+    BPM_RANGE = (40.0, 180.0)  # must match config.yaml's heart_rate zone bpm {min, max}
+    IDLE_FALLBACK_BPM = 70.0  # shown at rest before any reading's ever completed
+
+    def __init__(self, n_pixels, palette, idle_level=0.15, ease=0.15, decay_rate=6.0):
+        self.n = n_pixels
+        self.lut = _palette_lut(palette)
+        self.idle_level = idle_level
+        self.ease = ease
+        self.decay_rate = decay_rate
+        self.level = idle_level
+        self.phase = 0.0
+        self.history = collections.deque(maxlen=self.HISTORY_SIZE)
+        self._was_engaged = False
+        self._chime_elapsed = 0.0
+        self._reading_elapsed = 0.0
+        self._reading_samples = []
+        self._state = "idle"
+
+    def _color_at_level(self, level: float, white: bool = False):
+        if white:
+            return np.array([255.0, 255.0, 255.0])
+        index = int(min(max(level, 0.0), 1.0) * (len(self.lut) - 1))
+        return self.lut[index].astype(float)
+
+    def _pulse_frame(self, real_bpm: float, white: bool):
+        beat_period = 60.0 / real_bpm
+        self.phase = (self.phase + self.TICK_SECONDS / beat_period) % 1.0
+        pulse = np.exp(-self.phase * self.decay_rate)
+        target = self.idle_level + (1.0 - self.idle_level) * pulse
+        self.level += (target - self.level) * self.ease
+        color = self._color_at_level(self.level, white=white)
+        return np.tile(color, (self.n, 1))
+
+    def _chime_frame(self):
+        # Two flashes across CHIME_SECONDS - a deliberately different
+        # rhythm from the smooth BPM sine so it reads as a distinct "chime"
+        # cue, not just another heartbeat.
+        quarter = self.CHIME_SECONDS / 4
+        flash_on = (self._chime_elapsed % (2 * quarter)) < quarter
+        level = 1.0 if flash_on else 0.0
+        return np.tile(np.array([255.0, 255.0, 255.0]) * level, (self.n, 1))
+
+    def step(self, intensity: float = 0.0, bpm: float = 0.5):
+        engaged = intensity > 0.5
+        rising_edge = engaged and not self._was_engaged
+        self._was_engaged = engaged
+
+        if self._state == "idle" and rising_edge:
+            self._state = "start_chime"
+            self._chime_elapsed = 0.0
+
+        if self._state == "idle":
+            avg_bpm = sum(self.history) / len(self.history) if self.history else self.IDLE_FALLBACK_BPM
+            real_bpm = min(max(avg_bpm, self.BPM_RANGE[0]), self.BPM_RANGE[1])
+            frame = self._pulse_frame(real_bpm, white=False)
+
+        elif self._state == "start_chime":
+            frame = self._chime_frame()
+            self._chime_elapsed += self.TICK_SECONDS
+            if self._chime_elapsed >= self.CHIME_SECONDS:
+                self._state = "reading" if engaged else "idle"
+                self._reading_elapsed = 0.0
+                self._reading_samples = []
+
+        elif self._state == "reading":
+            if not engaged:
+                self._state = "idle"  # abandoned - contact lost mid-reading, nothing recorded
+                frame = self._pulse_frame(self.IDLE_FALLBACK_BPM, white=False)
+            else:
+                real_bpm = self.BPM_RANGE[0] + min(max(bpm, 0.0), 1.0) * (self.BPM_RANGE[1] - self.BPM_RANGE[0])
+                self._reading_samples.append(real_bpm)
+                frame = self._pulse_frame(real_bpm, white=True)
+                self._reading_elapsed += self.TICK_SECONDS
+                if self._reading_elapsed >= self.READING_SECONDS:
+                    self.history.append(sum(self._reading_samples) / len(self._reading_samples))
+                    self._state = "end_chime"
+                    self._chime_elapsed = 0.0
+
+        else:  # end_chime
+            frame = self._chime_frame()
+            self._chime_elapsed += self.TICK_SECONDS
+            if self._chime_elapsed >= self.CHIME_SECONDS:
+                self._state = "idle"
+
         return np.clip(frame, 0, 255).astype(np.uint8)
 
 
