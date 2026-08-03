@@ -136,27 +136,37 @@ void updateBatteryReading(unsigned long now) {
 // ---------------------------------------------------------------------------
 // 3. On-device screen feedback
 // ---------------------------------------------------------------------------
-// A simple bottom-up bar - taller and brighter the harder the stick is
-// shaken - so whoever's holding it gets immediate feedback without having
-// to look across the room at the LED strip. Skipped entirely while the
-// display is asleep (section 4) - drawing to a sleeping panel wastes power
-// for nothing visible.
+// Was a bottom-up magnitude bar - dropped (2026-08-01, didn't look nice) in
+// favour of an idle invite instead: "SWING ME" while the stick's resting,
+// clearing to blank the moment real motion is detected, so the prompt
+// doesn't clutter the screen while someone's actually using it. Skipped
+// entirely while the display is asleep (section 4) - drawing to a sleeping
+// panel wastes power for nothing visible.
+//
+// Own threshold rather than reusing section 4's IDLE_THRESHOLD - this file's
+// top-of-file comment deliberately keeps each of these 4 sections pullable
+// without touching the others, so this stays self-contained even though the
+// two thresholds happen to share the same value today.
+
+static const float SWING_INVITE_THRESHOLD = 0.05f;
 
 void updateScreen(float acceleration, bool display_asleep) {
   if (display_asleep) return;
 
   auto &dsp = M5.Display;
-  int32_t w = dsp.width();
-  int32_t h = dsp.height();
-  int32_t bar_h = (int32_t)(acceleration * h);
-
   dsp.startWrite();
-  dsp.fillRect(0, 0, w, h - bar_h, TFT_BLACK);   // empty space above the bar
-  dsp.fillRect(0, h - bar_h, w, bar_h, TFT_CYAN); // the bar itself
+  dsp.fillScreen(TFT_BLACK);
+  if (acceleration < SWING_INVITE_THRESHOLD) {
+    // setTextDatum(middle_center) + drawString at the screen's centre point
+    // is the standard LovyanGFX/M5GFX centred-text pattern - not compile-
+    // verified against this board's exact library version yet, check this
+    // renders correctly (position/size) the first time you flash it.
+    dsp.setTextColor(TFT_CYAN, TFT_BLACK);
+    dsp.setTextSize(2);
+    dsp.setTextDatum(middle_center);
+    dsp.drawString("SWING ME", dsp.width() / 2, dsp.height() / 2);
+  }
   dsp.endWrite();
-  // Brute-force full-height redraw every call - fine at this size/rate. If
-  // it ever looks flickery, the fix is drawing into an off-screen sprite
-  // and pushing that in one go, not optimising this function directly.
 }
 
 // ---------------------------------------------------------------------------
