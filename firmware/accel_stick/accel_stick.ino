@@ -40,6 +40,8 @@
 //   3. On-device screen feedback (a live bar for whoever's holding it)
 //   4. Idle power save (screen sleep after a stretch of no motion)
 
+// version on 2026-08-03
+
 #include <M5Unified.h>
 #include <math.h>
 

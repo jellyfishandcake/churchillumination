@@ -1,3 +1,4 @@
+// version on 2026-08-03 update
 // Seeed XIAO ESP32S3 Sense presence/motion/loudness node - one of 2 boards
 // distributed around the installation space, publishing over WiFi/MQTT to
 // the Pi (see src/sensing/nodes.py for the Pi-side contract this firmware
@@ -58,7 +59,7 @@ static const uint16_t MQTT_BROKER_PORT = 1883;
 
 // Must be one of config.yaml's sensors.nodes.node_ids ("node1"/"node2" by
 // default - see config.py's DEFAULTS). Change and re-flash for the 2nd board.
-static const char *NODE_ID = "node2";
+static const char *NODE_ID = "node1";
 
 static const char *TOPIC_PREFIX = "esp32";
 static const unsigned long PUBLISH_INTERVAL_MS = 200;  // 5Hz - plenty for ambient sensing, keeps WiFi/MQTT traffic light
@@ -80,11 +81,19 @@ void ensureWifiConnected() {
   // Force the WiFi stack to fully drop any in-progress/stuck state before
   // reconfiguring - without this, a previous attempt that didn't cleanly
   // resolve can still make the following WiFi.begin() fail with "sta is
-  // connecting, cannot set config", even with waitForConnectResult() below.
-  // This is a known, still-not-fully-fixed race in recent Arduino-ESP32
-  // core versions (see e.g. espressif/arduino-esp32#7095) - disconnect()
-  // first is the documented workaround.
-  WiFi.disconnect();
+  // connecting, return error"/"cannot set config", even with
+  // waitForConnectResult() below. This is a known, still-not-fully-fixed
+  // race in recent Arduino-ESP32 core versions (see e.g.
+  // espressif/arduino-esp32#7095) - disconnect() first is the documented
+  // workaround, but a plain disconnect() alone wasn't enough in practice
+  // (2026-08-03 real-hardware log: every retry hit the exact same instant
+  // "return error" - the driver never actually finished tearing down
+  // between attempts). disconnect(true) also powers the radio off instead
+  // of just de-associating - a fuller reset - and the delay below gives
+  // that teardown time to actually finish (it's async under the hood)
+  // before the next begin() call can race it again.
+  WiFi.disconnect(true);
+  delay(200);
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   // waitForConnectResult() blocks until THIS attempt fully resolves (success
@@ -92,7 +101,23 @@ void ensureWifiConnected() {
   // give up and let the next loop() call WiFi.begin() again while the
   // previous attempt is still resolving in the background.
   auto result = WiFi.waitForConnectResult(15000);
-  Serial.println(result == WL_CONNECTED ? " connected" : " failed, will retry next loop");
+  if (result == WL_CONNECTED) {
+    // Confirms DHCP actually handed out a real address on the hotspot's
+    // 10.42.0.0/24 subnet - "WiFi connected" alone doesn't guarantee that;
+    // an unexpected 169.254.x.x here would mean association succeeded but
+    // DHCP itself failed, which explains an otherwise-mysterious inability
+    // to reach MQTT_BROKER_HOST afterwards.
+    Serial.print(" connected, IP=");
+    Serial.println(WiFi.localIP());
+    return;
+  }
+  // WiFi.status() codes: 1=WL_NO_SSID_AVAIL (SSID not seen - wrong name,
+  // wrong band, or out of range), 4=WL_CONNECT_FAILED (usually a wrong
+  // password), 6=WL_DISCONNECTED. Printing the raw code rather than
+  // guessing which failure this is - "failed, will retry" alone doesn't
+  // distinguish a bad password from the known arduino-esp32 connect race
+  // from the AP just not being visible, and those need different fixes.
+  Serial.printf(" failed (status=%d), will retry next loop\n", (int)result);
 }
 
 void ensureMqttConnected() {

@@ -13,6 +13,15 @@ Usage:
     python -m tools.test_dmx cycle                          # slow R -> G -> B cycle, channels 1-3
     python -m tools.test_dmx blackout
     python -m tools.test_dmx solid 255 0 0 --port COM5      # explicit port if auto-detect picks the wrong device
+    python -m tools.test_dmx raw 112=255                    # ONLY channel 112 set, everything else 0 -
+                                                              # for figuring out an unfamiliar fixture's real
+                                                              # channel layout one channel at a time, since
+                                                              # `solid` can't isolate a single channel (see its
+                                                              # fixed r/g/b-at-3-consecutive-channels shape
+                                                              # above). Give several channel=value pairs at
+                                                              # once (space-separated) to test a guessed
+                                                              # layout, e.g. a guessed RGBW mode:
+                                                              #   python -m tools.test_dmx raw 112=0 113=0 114=0 115=255
 """
 import argparse
 import time
@@ -40,8 +49,13 @@ def _run(fn):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", choices=["ports", "solid", "cycle", "blackout"])
-    parser.add_argument("rgb", nargs="*", type=int, help="r g b (0-255), required for 'solid'")
+    parser.add_argument("command", choices=["ports", "solid", "cycle", "blackout", "raw"])
+    # Untyped/unparsed here since the two commands that use this need different
+    # shapes ('solid' wants 3 ints; 'raw' wants channel=value strings) - each
+    # branch below parses its own args out of this shared list rather than
+    # this needing two separate nargs="*" positionals (which argparse can't
+    # unambiguously split between anyway).
+    parser.add_argument("args_list", nargs="*", help="'solid': r g b (0-255). 'raw': one or more channel=value pairs (1-based channel, 0-255 value)")
     parser.add_argument("--start", type=int, default=1, help="DMX start channel, 1-based (default: 1)")
     parser.add_argument("--port", default=None, help="explicit serial port, e.g. COM5 - overrides auto-detect")
     args = parser.parse_args()
@@ -58,12 +72,38 @@ def main():
         return
 
     if args.command == "solid":
-        if len(args.rgb) != 3:
+        if len(args.args_list) != 3:
             raise SystemExit("solid needs exactly 3 values: r g b (0-255)")
-        r, g, b = args.rgb
+        r, g, b = (int(v) for v in args.args_list)
         universe = [0] * UNIVERSE_SIZE
         universe[args.start - 1:args.start + 2] = [r, g, b]
         print(f"Sending R={r} G={g} B={b} at channel {args.start} (Ctrl+C to stop)...")
+
+        def send_forever():
+            while True:
+                dmx.send_channels(universe)
+                time.sleep(0.05)
+
+        _run(send_forever)
+        return
+
+    if args.command == "raw":
+        if not args.args_list:
+            raise SystemExit("raw needs at least one channel=value pair, e.g. 112=255")
+        universe = [0] * UNIVERSE_SIZE
+        set_channels = {}
+        for pair in args.args_list:
+            if "=" not in pair:
+                raise SystemExit(f"expected channel=value (e.g. 112=255), got {pair!r}")
+            chan_str, value_str = pair.split("=", 1)
+            channel, value = int(chan_str), int(value_str)
+            if not (1 <= channel <= UNIVERSE_SIZE):
+                raise SystemExit(f"channel {channel} out of range (1-{UNIVERSE_SIZE})")
+            if not (0 <= value <= 255):
+                raise SystemExit(f"value {value} out of range (0-255)")
+            universe[channel - 1] = value
+            set_channels[channel] = value
+        print(f"Sending {set_channels} (every other channel at 0, Ctrl+C to stop)...")
 
         def send_forever():
             while True:
