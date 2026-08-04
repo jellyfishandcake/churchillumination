@@ -16,14 +16,24 @@
 # the device is plugged in - "auto" means the rule isn't matching):
 #   cat /sys/bus/usb/devices/*/power/control
 
+# USB Hub 2 addresses
+# Bus 001 Device 008: ID 2e8a:000d Raspberry Pi USB3 HUB
+# Bus 004 Device 002: ID 2e8a:000e Raspberry Pi USB3 HUB
+SUBSYSTEM=="usb", ATTR{idVendor}=="2e8a", ATTR{idProduct}=="000d", TEST=="power/control", ATTR{power/control}="on"
+SUBSYSTEM=="usb", ATTR{idVendor}=="2e8a", ATTR{idProduct}=="000e", TEST=="power/control", ATTR{power/control}="on"
+
 # Mic (see audio.py's STALE_AFTER_SECONDS comment for the failure mode this prevents)
-SUBSYSTEM=="usb", ATTR{idVendor}=="XXXX", ATTR{idProduct}=="XXXX", TEST=="power/control", ATTR{power/control}="on"
+# Bus 003 Device 009: ID 08bb:2902 Texas Instruments PCM2902 Audio Codec
+SUBSYSTEM=="usb", ATTR{idVendor}=="08bb", ATTR{idProduct}=="2902", TEST=="power/control", ATTR{power/control}="on"
 
 # MT7612U WiFi dongle (wlan1, hosts the node hotspot)
-SUBSYSTEM=="usb", ATTR{idVendor}=="XXXX", ATTR{idProduct}=="XXXX", TEST=="power/control", ATTR{power/control}="on"
+# Bus 004 Device 003: ID 0e8d:7612 MediaTek Inc. MT7612U 802.11a/b/g/n/ac Wireless Adapter
+SUBSYSTEM=="usb", ATTR{idVendor}=="0e8d", ATTR{idProduct}=="7612", TEST=="power/control", ATTR{power/control}="on"
 
 # M5Stack accel stick (USB-serial)
-SUBSYSTEM=="usb", ATTR{idVendor}=="XXXX", ATTR{idProduct}=="XXXX", TEST=="power/control", ATTR{power/control}="on"
+# Bus 001 Device 014: ID 303a:1001 Espressif USB JTAG/serial debug unit
+SUBSYSTEM=="usb", ATTR{idVendor}=="303a", ATTR{idProduct}=="1001", TEST=="power/control", ATTR{power/control}="on"
 
 # USB-DMX interface (USB-serial, FTDI or CH340 - see dmx.py's module docstring)
-SUBSYSTEM=="usb", ATTR{idVendor}=="XXXX", ATTR{idProduct}=="XXXX", TEST=="power/control", ATTR{power/control}="on"
+# Bus 001 Device 015: ID 0403:6001 Future Technology Devices International, Ltd FT232 Serial (UART) IC
+SUBSYSTEM=="usb", ATTR{idVendor}=="0403", ATTR{idProduct}=="6001", TEST=="power/control", ATTR{power/control}="on"
