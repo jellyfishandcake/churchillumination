@@ -44,13 +44,35 @@ class MotionSensor(Sensor):
     """sensitivity is a placeholder — thermal frame-diff magnitudes (°C)
     are a very different scale to the old 0-255 grayscale diff, and need
     calibrating against the real sensor once it's in hand, not guessed.
-    webcam_sensitivity only matters on the dev-machine webcam fallback."""
+    webcam_sensitivity only matters on the dev-machine webcam fallback.
 
-    def __init__(self, sensitivity: float = 10.0, webcam_sensitivity: float = 8.0):
+    Also maintains a per-pixel background baseline, far slower-adapting
+    than the frame-to-frame diff `motion` above is built from, and uses it
+    to isolate a person-shaped "blob" by absolute temperature/brightness
+    rather than by change - a person standing still keeps showing up here
+    even though `motion` itself settles back toward 0 for them within a
+    couple frames. Built for web/shadow.html's projector shadow-cast
+    effect: whichever pixels currently read warmer than the slow baseline
+    are "person", published as a 0..1 mask (see read()'s thermal_mask/
+    thermal_width/thermal_height). blob_threshold/webcam_blob_threshold are
+    just as untuned as sensitivity/webcam_sensitivity above - calibrate
+    against a real person in the real room once the hardware's in hand."""
+
+    # Per-tick EMA rate for the background model - deliberately far slower
+    # than any single frame-diff (SMOOTHING_ALPHA-scale would still fade a
+    # stationary person out within seconds); this is closer to "minutes"
+    # so a shadow doesn't visibly fade while someone's just standing there.
+    BASELINE_ALPHA = 0.005
+
+    def __init__(self, sensitivity: float = 10.0, webcam_sensitivity: float = 8.0,
+                 blob_threshold: tuple = (2.0, 6.0), webcam_blob_threshold: tuple = (15.0, 60.0)):
         super().__init__()
         self.sensitivity = sensitivity
         self.webcam_sensitivity = webcam_sensitivity
+        self.blob_threshold = blob_threshold  # (low, high) °C above baseline -> mask ramps 0..1 across this range
+        self.webcam_blob_threshold = webcam_blob_threshold  # same idea, 0-255 grayscale units - dev fallback only
         self._prev = None
+        self._baseline = None  # slow per-pixel background model, seeded from the first frame
         self._active = False  # MLX90640 present
         self._cv_cam = None   # dev-machine webcam fallback
 
@@ -80,6 +102,22 @@ class MotionSensor(Sensor):
 
         return None, False
 
+    def _blob_mask(self, frame, is_thermal):
+        """0..1 per-pixel foreground strength, flat (same shape as `frame`)
+        - see the class docstring. Updates (and, on the first call, seeds)
+        the slow background baseline as a side effect, so callers get a
+        mask "for free" alongside `motion` on each read() rather than
+        needing a second call per tick."""
+        if self._baseline is None:
+            self._baseline = frame.astype(float).copy()
+            return np.zeros_like(frame, dtype=float)
+
+        diff = frame - self._baseline
+        self._baseline += self.BASELINE_ALPHA * (frame - self._baseline)
+
+        low, high = self.blob_threshold if is_thermal else self.webcam_blob_threshold
+        return np.clip((diff - low) / (high - low), 0.0, 1.0)
+
     def read(self) -> dict:
         try:
             frame, is_thermal = self._grab_frame()
@@ -104,10 +142,29 @@ class MotionSensor(Sensor):
             self._mark_failed(RuntimeError("thermal frame looks invalid (I2C read likely failing silently)"))
             return {"motion": random.uniform(0.0, 0.05)}
 
+        mask = self._blob_mask(frame, is_thermal)
+        if is_thermal:
+            # MLX90640's fixed layout - get_frame() hands back a flat 768-
+            # element array with no row/col structure attached, so this
+            # width/height (and therefore row-major-ness/orientation) is
+            # the datasheet's stated 32x24, not yet confirmed against a
+            # real frame + a person standing in a known spot. If
+            # web/shadow.html's shadow ends up mirrored or rotated relative
+            # to where someone's actually standing, this is the first place
+            # to check, alongside shadow.js's FLIP_X/FLIP_Y.
+            width, height = 32, 24
+        else:
+            height, width = frame.shape  # dev-only webcam fallback - already a real 2D (height, width) array
+        blob_reading = {
+            "thermal_mask": mask.flatten().tolist(),
+            "thermal_width": width,
+            "thermal_height": height,
+        }
+
         if self._prev is None:
             self._prev = frame
             self._mark_ok()
-            return {"motion": 0.0}
+            return {"motion": 0.0, **blob_reading}
 
         diff = np.abs(frame - self._prev)  # per-pixel change between frames
         self._prev = frame
@@ -117,4 +174,4 @@ class MotionSensor(Sensor):
             motion = min(1.0, (diff.mean() / 255.0) * self.webcam_sensitivity)  # diff is 0-255 grayscale
 
         self._mark_ok()
-        return {"motion": motion}
+        return {"motion": motion, **blob_reading}

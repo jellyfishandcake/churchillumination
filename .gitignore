@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 config.yaml
 web/qr.png
+web/uploads/
 src/sensing/models/*.tflite
 
 # Pimoroni's MLX90640 C library - cloned/built directly under the project

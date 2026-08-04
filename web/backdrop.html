@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Creative Computing — Set the Shadow Backdrop</title>
+  <link rel="stylesheet" href="/style.css">
+  <style>
+    body { max-width: 640px; margin-inline: auto; }
+    #job-status { font-family: var(--font-label); font-size: 0.9rem; margin-top: 0.75rem; min-height: 1.2em; color: var(--muted); }
+    #job-status.error { color: var(--error); }
+    #job-status.success { color: var(--success); }
+    #photo-preview { margin-top: 0.75rem; border-radius: 8px; overflow: hidden; background: #e2e2e2; display: none; }
+    #photo-preview img { display: block; width: 100%; }
+  </style>
+</head>
+<body>
+  <h1>Set the Shadow Backdrop <span id="status">connecting…</span></h1>
+
+  <div class="panel">
+    <h2>From a photo</h2>
+    <p style="color: var(--muted); font-size: 0.85rem;">
+      This becomes the background image on the projector's shadow display -
+      whoever's standing in front of the thermal camera casts a shadow over
+      it. There's one current backdrop for the whole installation, so
+      uploading here replaces whatever's showing now.
+    </p>
+    <div class="field">
+      <span class="field-label">Photo</span>
+      <input type="file" id="photo-input" accept="image/*">
+    </div>
+    <div id="photo-preview"><img id="photo-preview-img" alt=""></div>
+    <div class="field">
+      <span></span>
+      <button id="upload-button">Set as backdrop</button>
+    </div>
+    <div id="job-status"></div>
+  </div>
+
+  <div id="back-link"><a href="/index.html">← Back to dashboard</a></div>
+
+  <script src="/wsClient.js"></script>
+  <script src="/backdrop.js"></script>
+</body>
+</html>

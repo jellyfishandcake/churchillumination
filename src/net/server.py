@@ -11,6 +11,7 @@ Also serves the /web folder as static files so you can just open
 http://localhost:8000 in a browser — no separate web server needed.
 """
 import asyncio
+import base64
 import json
 import logging
 import pathlib
@@ -53,6 +54,14 @@ latest = {
     # a dedicated reply message. See palette_job_request below and
     # main.py's palette_build_loop, which actually does the work.
     "palette_job": {"status": "idle", "name": None, "hex_colors": None, "error": None, "overwritten": False},
+    # web/shadow.html's projector background - visitors upload a photo via
+    # backdrop.html (see set_shadow_backdrop below), same public trust tier
+    # as build_palette. The actual bytes live on disk (UPLOADS_DIR below,
+    # served like any other static file) rather than in this broadcast dict
+    # - only a version counter goes out over the 20Hz websocket, so
+    # shadow.html can tell "the image changed, re-fetch it" without every
+    # connected client re-downloading a full photo 20 times a second.
+    "shadow_backdrop": {"version": 0},
 }
 
 # When the browser sends colours back, we stash them here so main.py can pick up.
@@ -293,6 +302,39 @@ async def _handle_control(websocket, payload: dict) -> None:
             latest["sketches"] = latest["sketches"] + [name]
         print(f"[server] saved sketch {name!r}")
 
+    elif action == "set_shadow_backdrop":
+        image_data_url = payload.get("image_data_url")
+
+        if not (isinstance(image_data_url, str) and image_data_url.startswith("data:image/")):
+            print("[server] rejected set_shadow_backdrop: image_data_url missing/malformed")
+            return
+        if len(image_data_url) > MAX_IMAGE_DATA_URL_CHARS:
+            print("[server] rejected set_shadow_backdrop: image_data_url too large")
+            return
+
+        _header, _, b64_data = image_data_url.partition(",")
+        try:
+            image_bytes = base64.b64decode(b64_data)
+        except ValueError:  # binascii.Error (a ValueError subclass) on malformed base64
+            print("[server] rejected set_shadow_backdrop: image_data_url isn't valid base64")
+            return
+
+        # Single current slot, not one file per upload - web/shadow.html
+        # always shows whichever photo was uploaded most recently, same
+        # "one backdrop for the installation" model as build_palette's named
+        # palettes but simpler since there's nothing to pick between. Always
+        # .jpg regardless of the source photo's original format -
+        # backdrop.js always re-encodes via canvas.toDataURL("image/jpeg",
+        # ...) before sending, same as contribute.js already does for
+        # palette photos.
+        UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+        (UPLOADS_DIR / "shadow_backdrop.jpg").write_bytes(image_bytes)
+        # Bump, don't just set to 1 - repeated uploads must each produce a
+        # new version number so shadow.js's cache-busting `?v=` query
+        # actually changes and the browser doesn't serve a stale cached copy.
+        latest["shadow_backdrop"] = {"version": latest["shadow_backdrop"]["version"] + 1}
+        print("[server] saved new shadow backdrop")
+
     else:
         print(f"[server] ignoring unknown control action: {action!r}")
  
@@ -307,12 +349,22 @@ WEB_DIR = pathlib.Path(__file__).parent.parent.parent / "web"
 # serve_static's existing path-escape check covers fetching them for free -
 # no separate static route needed.
 SKETCHES_DIR = WEB_DIR / "sketches"
- 
+# Visitor-uploaded content that isn't a sketch - currently just
+# shadow_backdrop.jpg (see set_shadow_backdrop above). Same "lives under
+# WEB_DIR so serve_static's path-escape check covers it for free" reasoning
+# as SKETCHES_DIR.
+UPLOADS_DIR = WEB_DIR / "uploads"
+
 MIME_TYPES = {
     ".html": "text/html",
     ".js": "application/javascript",
     ".css": "text/css",
     ".json": "application/json",
+    # Added for UPLOADS_DIR's shadow_backdrop.jpg - everything above this
+    # predates any binary static content, only text/code assets.
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
 }
  
 async def serve_static(connection, request):
