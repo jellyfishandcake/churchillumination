@@ -18,7 +18,10 @@ sensors must use distinct keys.
 
 On a Raspberry Pi 5, gpiozero's default pin factory (RPi.GPIO) doesn't
 support the Pi 5's GPIO chip — install `lgpio` too (see
-requirements-pi.txt).
+requirements-pi.txt). Even with lgpio installed, gpiozero 2.0.1 targets the
+wrong gpiochip number on current kernels (see the retry-with-LGPIOFactory
+logic below) - a real bug hit and fixed against actual Pi 5 hardware
+2026-08-04, not a hypothetical.
 """
 
 import random
@@ -26,9 +29,15 @@ import random
 from .base import Sensor
 
 try:
-    from gpiozero import MotionSensor as GPIOMotionSensor
+    from gpiozero import Device, MotionSensor as GPIOMotionSensor
 except ImportError:
     GPIOMotionSensor = None
+    Device = None
+
+try:
+    from gpiozero.pins.lgpio import LGPIOFactory
+except ImportError:
+    LGPIOFactory = None
 
 
 class PIRSensor(Sensor):
@@ -39,7 +48,25 @@ class PIRSensor(Sensor):
             try:
                 self._pir = GPIOMotionSensor(gpio_pin)
             except Exception:
-                self._pir = None  # no PIR wired up, or wrong pin factory
+                # gpiozero 2.0.1 hardcodes gpiochip 4 for its Pi 5 lgpio pin
+                # factory (github.com/gpiozero/gpiozero/issues/1166), but
+                # current Raspberry Pi kernels (post-mid-2024) assign the
+                # 40-pin header's GPIOs to gpiochip 0 instead - the mismatch
+                # makes the construction above fail with "can not open
+                # gpiochip" even though the device/permissions are
+                # completely fine (confirmed 2026-08-04 on real hardware:
+                # `lgpio.gpiochip_open(0)` succeeds directly - only
+                # gpiozero's own auto-detected chip number was wrong).
+                # Retry once, forcing chip 0 explicitly, before giving up -
+                # harmless on hardware where the first attempt failed for a
+                # real reason (e.g. Pi 4, or no PIR wired up at all), since
+                # this just fails again too in that case.
+                try:
+                    if LGPIOFactory is not None:
+                        Device.pin_factory = LGPIOFactory(chip=0)
+                        self._pir = GPIOMotionSensor(gpio_pin)
+                except Exception:
+                    self._pir = None  # no PIR wired up, or wrong pin factory
 
     def read(self) -> dict:
         if self._pir is None:
