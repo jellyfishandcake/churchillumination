@@ -146,7 +146,7 @@ class AudioReactiveWaveEffect:
     isn't the right vehicle for this zone's visual response).
 
     `loudness` picks a position in the palette gradient (same idea as
-    DirectionalWaveEffect's `direction` -> palette_index), `motion`
+    TriArmGlideEffect's per-arm palette_index), `motion`
     controls how fast the wave flows, `env_brightness` (from the
     multisensor stick's lux reading) keeps the strip visible against the
     room's own light rather than reacting to loudness/motion at all, and
@@ -345,55 +345,114 @@ class ReactiveGlowEffect:
         return np.clip(frame, 0, 255).astype(np.uint8)
 
 
-class DirectionalWaveEffect:
-    """Built for a multi-segment DMX zone (e.g. an 8-segment wall-washer
-    bar, output.pixels > 1) where a signed "which way" signal should show
-    up as *where* the light is, not just how bright - the accelerometer
-    stick's `direction` reading (see accel_stick.ino/accel_stick.py).
+class TriArmGlideEffect:
+    """For the accelerometer zone once it's three LED arms radiating from a
+    shared hub at 120 degrees apart, spliced into the same continuous APA102
+    chain as the heart_rate zone (not a standalone DMX fixture like the
+    single-bar DirectionalWaveEffect this replaces) - see accel_stick.ino's
+    atan2-based `angle_deg` and config.py's accelerometer zone.
 
-    Unlike OrganicCometEffect, position tracks `direction` directly instead
-    of drifting on its own - a shake to the left should show the light
-    shift left on THIS tick, not spend seconds travelling there. `intensity`
-    (the shake's magnitude) controls brightness/trail strength, so an idle
-    stick settles to a dim, centred glow rather than a bright comet sitting
-    wherever it last got shaken to.
+    `angle` arrives pre-rescaled to 0..1 by main.py's _resolve_one_source
+    (the zone's source config supplies {min: 0, max: 360} - see config.py)
+    and is converted back to radians here. `intensity` is the shake's
+    magnitude, same signal DirectionalWaveEffect used.
 
-    `direction` arrives pre-rescaled to 0..1 by main.py's
-    _resolve_one_source (the zone's source config supplies {min: -1, max:
-    1} - see config.py's accelerometer zone) - 0 = full left, 0.5 = centre,
-    1 = full right, same convention temperature/humidity zones already use
-    for their own {min, max} rescale.
+    Each arm claims a smooth ~180-degree-wide slice of the circle centred
+    on its own spoke, via a clamped cosine falloff: weight = max(0,
+    cos(angle - arm_centre)). With arms exactly 120 degrees apart this
+    self-limits to at most two arms active at once, both getting equal
+    weight exactly on the boundary between them - a swing angled between
+    two arms lights both, proportionally, rather than snapping hard at the
+    60-degree midpoint.
 
-    Safe at n_pixels=1 too (unlike OrganicCometEffect's collision bug
-    there): idx0 and idx1 falling on the same cell just means that cell
-    takes the max of both contributions, not an additively-reinforcing
-    value, since position here is driven directly by input each tick
-    rather than accumulating from its own last position."""
+    "Glide out": while a swing keeps an arm's weight * intensity above
+    IDLE_THRESHOLD, that arm's head advances from the hub (distance 0)
+    toward the tip at a speed set by intensity - a harder shake reaches
+    further, faster. Once the swing moves on (this arm's drive drops back
+    below threshold), the head holds its position and fades with the rest
+    of the trail rather than snapping back, then resets to the hub so the
+    next swing toward this arm starts from the centre again, not wherever
+    the last one left off.
 
-    def __init__(self, n_pixels, palette, decay=0.8, background_level=0.08):
-        self.n = n_pixels
+    n_pixels doesn't split evenly across ARM_COUNT in general - the last
+    arm absorbs the remainder, same "pad the odd one out" idea output_loop
+    already uses when a zone's total doesn't divide cleanly.
+
+    ARM_ANGLES_DEG and ARM_REVERSED below are placeholders - the physical
+    shape isn't cut/soldered yet (it'll be one continuous strip bent/spliced
+    into three arms, not three separate fixtures). Once it is:
+    - ARM_ANGLES_DEG: swing the stick toward each arm in turn and watch
+      `sensors.angle_deg` on the admin dashboard; set each arm's entry to
+      the angle that lit it, rather than assuming 0/120/240 in stick-frame
+      degrees actually lines up with the arms as mounted.
+    - ARM_REVERSED: assumes every arm is wired hub-to-tip in increasing
+      pixel order within its slice of the strip. Flip an entry to True if
+      that arm's data line actually runs tip-to-hub once soldered (likely
+      for at least one arm, since a single continuous chain snaking hub -
+      tip - hub - tip - hub - tip alternates direction every other arm)."""
+
+    ARM_COUNT = 3
+    ARM_ANGLES_DEG = (0.0, 120.0, 240.0)   # placeholder - recalibrate on-site, see docstring
+    ARM_REVERSED = (False, False, False)   # placeholder - recalibrate on-site, see docstring
+    IDLE_THRESHOLD = 0.08                  # below this arm-weight*intensity, that arm isn't "being swung toward"
+    GLIDE_SPEED = 0.6                      # pixels/tick at intensity=1.0 - tune once the arm length is real
+
+    def __init__(self, n_pixels, palette, decay=0.9, background_level=0.05):
         self.lut = _palette_lut(palette)
         self.decay = decay
         self.background = self.lut[0] * background_level
         self.trail = np.zeros(n_pixels)
 
-    def step(self, intensity: float = 0.0, direction: float = 0.5):
-        intensity = min(max(intensity, 0.0), 1.0)
-        direction = min(max(direction, 0.0), 1.0)
+        base = n_pixels // self.ARM_COUNT
+        lengths = [base] * self.ARM_COUNT
+        lengths[-1] += n_pixels - base * self.ARM_COUNT  # last arm absorbs the remainder
+        starts = np.cumsum([0] + lengths[:-1]).tolist()
+        self.arm_ranges = list(zip(starts, lengths))  # (start, length) per arm, in the shared trail array
+        self.arm_center_rad = [np.radians(deg) for deg in self.ARM_ANGLES_DEG]
+        self.head_pos = [0.0] * self.ARM_COUNT  # hub-relative sub-pixel distance per arm
 
-        pos = direction * (self.n - 1)
-        idx0 = int(np.floor(pos))
-        idx1 = min(idx0 + 1, self.n - 1)
-        frac = pos - idx0
+    def step(self, intensity: float = 0.0, angle: float = 0.0):
+        intensity = min(max(intensity, 0.0), 1.0)
+        angle = min(max(angle, 0.0), 1.0)
+        angle_rad = angle * 2 * np.pi
 
         self.trail *= self.decay
-        head_strength = scaled(intensity, 0.15, 1.0)
-        self.trail[idx0] = max(self.trail[idx0], (1 - frac) * head_strength)
-        self.trail[idx1] = max(self.trail[idx1], frac * head_strength)
 
-        palette_index = int(direction * (len(self.lut) - 1))
-        color = self.lut[palette_index].astype(float)
-        frame = self.background[None, :] + (color - self.background)[None, :] * self.trail[:, None]
+        for k in range(self.ARM_COUNT):
+            start, length = self.arm_ranges[k]
+            if length == 0:
+                continue
+
+            weight = max(0.0, np.cos(angle_rad - self.arm_center_rad[k]))
+            drive = weight * intensity
+
+            if drive > self.IDLE_THRESHOLD:
+                self.head_pos[k] = min(length - 1, self.head_pos[k] + self.GLIDE_SPEED * intensity)
+                dist0 = int(np.floor(self.head_pos[k]))
+                dist1 = min(length - 1, dist0 + 1)
+                frac = self.head_pos[k] - dist0
+
+                # hub-relative distance -> real index in the shared trail array
+                to_index = (lambda d: start + (length - 1 - d)) if self.ARM_REVERSED[k] else (lambda d: start + d)
+                head_strength = scaled(drive, 0.2, 1.0)
+                self.trail[to_index(dist0)] = max(self.trail[to_index(dist0)], (1 - frac) * head_strength)
+                self.trail[to_index(dist1)] = max(self.trail[to_index(dist1)], frac * head_strength)
+            else:
+                self.head_pos[k] = 0.0  # next swing toward this arm starts from the hub again
+
+        frame = np.tile(self.background, (len(self.trail), 1))
+        for k in range(self.ARM_COUNT):
+            start, length = self.arm_ranges[k]
+            if length == 0:
+                continue
+            # Each arm gets a distinct spot in the palette gradient, so which
+            # arm is lit reads visually too, not just spatially - same idea
+            # DirectionalWaveEffect used direction for, just per-arm instead.
+            palette_index = int((k / max(1, self.ARM_COUNT - 1)) * (len(self.lut) - 1))
+            color = self.lut[palette_index].astype(float)
+            seg_trail = self.trail[start:start + length][:, None]
+            frame[start:start + length] = self.background[None, :] + (color - self.background)[None, :] * seg_trail
+
         return np.clip(frame, 0, 255).astype(np.uint8)
 
 

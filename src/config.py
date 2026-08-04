@@ -12,7 +12,7 @@ DEFAULTS = {
     # boundary if ever exposed further than that.
     "server": {"host": "0.0.0.0", "port": 8000},
     "leds": {
-        "num_pixels": 26,  # total APA102 pixels - only counts zones below with output.type "led"; match this to your physical strip length
+        "num_pixels": 38,  # total APA102 pixels - only counts zones below with output.type "led"; match this to your physical strip length
         "layout": "strip",
         # Final output multiplier, applied after gamma correction (see
         # led_effects.apply_gamma) right before pixels go to hardware. The
@@ -93,15 +93,23 @@ DEFAULTS = {
             },
             {
                 "name": "accelerometer",
-                "effect": "directional_wave", "palette": "autumn",
-                # direction rescaled the same way temperature/humidity are -
-                # accel_stick's raw [-1, 1] "which way it's leaning" maps to
-                # 0..1 (0.5 = centred), see DirectionalWaveEffect's docstring.
+                "effect": "tri_arm_glide", "palette": "autumn",
+                # angle rescaled the same way temperature/humidity are -
+                # accel_stick's raw [0, 360) swing angle maps to 0..1, see
+                # TriArmGlideEffect's docstring. This used to be a single-
+                # pixel DMX fixture (DirectionalWaveEffect on start_address
+                # 4) - now a continuous-strip `led` zone instead, spliced
+                # onto the same chain as heart_rate, since the physical
+                # design moved to three arms radiating from a shared hub
+                # rather than one linear bar. DMX address 4 is free again.
                 "source": {
                     "intensity": "sensors.acceleration",
-                    "direction": {"path": "sensors.direction", "min": -1, "max": 1},
+                    "angle": {"path": "sensors.angle_deg", "min": 0, "max": 360},
                 },
-                "output": {"type": "dmx", "start_address": 4, "channels": ["r", "g", "b"], "pixels": 1},
+                # 12 = 4px/arm x 3 arms - a placeholder guess, not measured:
+                # the physical shape isn't cut/soldered yet. Confirm/replace
+                # once it is, and match num_pixels above to the real total.
+                "output": {"type": "led", "pixels": 12},
             },
         ],
     },

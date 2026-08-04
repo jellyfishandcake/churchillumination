@@ -15,28 +15,29 @@ organic_twinkle/reactive_glow); temp_humidity_matrix takes
 `temperature`+`humidity`, plus an optional `activity` for its shimmer (see
 its own docstring); pulse takes `intensity`+`bpm` (bpm times its per-beat
 flash to the wearer's actual heart rate - see PulseEffect's docstring);
-directional_wave takes `intensity`+`direction` (a signed "which way" signal
-rescaled to 0..1 - see DirectionalWaveEffect's own docstring);
-audio_reactive_wave takes `loudness`+`motion`+`env_brightness`+`ripple` (see
-AudioReactiveWaveEffect's own docstring); heart_rate_check_in takes
-`intensity`+`bpm`, same shape as pulse, but drives a distinct start/read/end
-check-in flow instead of a continuous display (see HeartRateEffect's own
-docstring) - a zone's configured `source` dict keys must match whichever
-effect it's assigned, since led_loop calls effect.step(**sources).
+tri_arm_glide takes `intensity`+`angle` (a swing angle rescaled to 0..1 -
+see TriArmGlideEffect's own docstring); audio_reactive_wave takes
+`loudness`+`motion`+`env_brightness`+`ripple` (see AudioReactiveWaveEffect's
+own docstring); heart_rate_check_in takes `intensity`+`bpm`, same shape as
+pulse, but drives a distinct start/read/end check-in flow instead of a
+continuous display (see HeartRateEffect's own docstring) - a zone's
+configured `source` dict keys must match whichever effect it's assigned,
+since led_loop calls effect.step(**sources).
 
 reactive_glow is the one to reach for on a single-pixel DMX zone
-(output.type: dmx, no `pixels` set) - organic_wave/organic_comet/
-directional_wave all vary colour or position *across pixel positions*,
-which a single DMX fixture doesn't have (see ReactiveGlowEffect's own
-docstring for the specific bug this avoids in organic_comet's case).
-directional_wave is the one to reach for once that DMX zone has real
-segments (output.pixels > 1, confirmed via tools/test_dmx.py).
+(output.type: dmx, no `pixels` set) - organic_wave/organic_comet all vary
+colour or position *across pixel positions*, which a single DMX fixture
+doesn't have (see ReactiveGlowEffect's own docstring for the specific bug
+this avoids in organic_comet's case). tri_arm_glide is specific to the
+accelerometer zone's three-armed `led` layout (output.type: led, one
+continuous chain split into three equal-ish spokes) - not meant to be
+picked for an arbitrary zone the way the other effects are.
 """
 
 from .led_effects import (
     OrganicWaveEffect, OrganicCometEffect, OrganicTwinkleEffect,
     PulseEffect, TempHumidityMatrixEffect, ReactiveGlowEffect,
-    DirectionalWaveEffect, AudioReactiveWaveEffect, HeartRateEffect,
+    TriArmGlideEffect, AudioReactiveWaveEffect, HeartRateEffect,
 )
 
 EFFECTS = {
@@ -46,7 +47,7 @@ EFFECTS = {
     "pulse": PulseEffect,
     "temp_humidity_matrix": TempHumidityMatrixEffect,
     "reactive_glow": ReactiveGlowEffect,
-    "directional_wave": DirectionalWaveEffect,
+    "tri_arm_glide": TriArmGlideEffect,
     "audio_reactive_wave": AudioReactiveWaveEffect,
     "heart_rate_check_in": HeartRateEffect,
 }

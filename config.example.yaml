@@ -12,7 +12,7 @@ server:
   port: 8000
 
 leds:
-  num_pixels: 26   # total APA102 pixels - only counts zones below with output.type "led"; match this to your physical strip length
+  num_pixels: 38   # total APA102 pixels - only counts zones below with output.type "led"; match this to your physical strip length
   layout: strip   # strip|grid|ring — only "strip" is implemented so far (see web/pixelMap.js)
   # Final output multiplier applied after gamma correction, right before
   # pixels go to hardware - the APA102 driver's own brightness byte is
@@ -36,12 +36,12 @@ leds:
   #
   # A zone's source dict keys must match its chosen effect's step()
   # parameter names - organic_wave/organic_comet/organic_twinkle/
-  # reactive_glow/directional_wave all take `intensity` (directional_wave
-  # also takes `direction`); temp_humidity_matrix takes
-  # `temperature`+`humidity`; audio_reactive_wave takes
-  # `loudness`+`motion`+`env_brightness`+`ripple`; heart_rate_check_in takes
-  # `intensity`+`bpm`, same as pulse. See src/output/effects/registry.py's
-  # own docstring for the full breakdown of which effect suits which zone shape.
+  # reactive_glow all take `intensity`; temp_humidity_matrix takes
+  # `temperature`+`humidity`; tri_arm_glide takes `intensity`+`angle`;
+  # audio_reactive_wave takes `loudness`+`motion`+`env_brightness`+`ripple`;
+  # heart_rate_check_in takes `intensity`+`bpm`, same as pulse. See
+  # src/output/effects/registry.py's own docstring for the full breakdown of
+  # which effect suits which zone shape.
   #
   # `output` says which hardware the zone actually drives:
   #   {type: led, pixels: N}  - a slice of the APA102 strip (modular/
@@ -70,7 +70,7 @@ leds:
   #     flag - don't assume it from a spec sheet.
   zones:
     - name: ambient
-      effect: audio_reactive_wave   # organic_wave | organic_comet | organic_twinkle | pulse | temp_humidity_matrix | directional_wave | audio_reactive_wave | heart_rate_check_in
+      effect: audio_reactive_wave   # organic_wave | organic_comet | organic_twinkle | pulse | temp_humidity_matrix | tri_arm_glide | audio_reactive_wave | heart_rate_check_in
       palette: winter            # any key in colour_palette.PALETTES / palettes.json
       source:
         loudness: sensors.loudness                                # picks position in the palette gradient - see AudioReactiveWaveEffect's docstring
@@ -98,12 +98,17 @@ leds:
         bpm: {path: heart_rate.bpm, min: 40, max: 180}   # must match HeartRateEffect.BPM_RANGE
       output: {type: led, pixels: 6}
     - name: accelerometer
-      effect: directional_wave   # position tracks direction, brightness/trail tracks intensity - see DirectionalWaveEffect's docstring
+      effect: tri_arm_glide   # swing glides from hub to tip on whichever arm(s) the angle points toward - see TriArmGlideEffect's docstring
       palette: autumn
       source:
         intensity: sensors.acceleration                              # raw shake magnitude, 0..1
-        direction: {path: sensors.direction, min: -1, max: 1}         # signed lean/swing -> 0..1, 0.5 = centred
-      output: {type: dmx, start_address: 4, channels: [r, g, b]}   # bump start_address if it now overlaps a segmented ambient zone above
+        angle: {path: sensors.angle_deg, min: 0, max: 360}            # swing angle -> 0..1
+      # Continuous-strip zone now (was a single-pixel DMX fixture on
+      # start_address 4 - now free) - three arms radiating from a shared
+      # hub, spliced onto the same chain as heart_rate. 12 = 4px/arm x 3
+      # arms is a placeholder guess; the physical shape isn't cut/soldered
+      # yet - confirm/replace once it is, and match leds.num_pixels above.
+      output: {type: led, pixels: 12}
 
 # Interface-level DMX512 settings - which zones actually send to it, and
 # each fixture's start_address/channels, are configured per-zone above

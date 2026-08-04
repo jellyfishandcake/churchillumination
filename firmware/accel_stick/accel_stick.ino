@@ -10,16 +10,19 @@
 // model.
 //
 // Wire protocol (see accel_stick.py's docstring for the Pi-side contract):
-//   {"acceleration": 0.3, "direction": -0.6, "battery_pct": 87}\n
+//   {"acceleration": 0.3, "angle_deg": 210.0, "battery_pct": 87}\n
 // One JSON object per line, "acceleration" in [0, 1] - same "deviation from
 // 1g at rest" convention the Pi-side sensors use (see the old sense_hat.py).
-// "direction" in [-1, 1] - which way the stick is currently leaning/swinging,
-// not a true swing trajectory (that would need integrating velocity, which
-// drifts badly on a cheap IMU without a fusion filter). Instead: whichever
-// horizontal axis (X or Y) currently has the larger deviation from rest
-// gives its sign, scaled by the same SENSITIVITY as acceleration. 0 = at
-// rest/centred. Good enough for "which way did you just shake it" - not
-// good enough for tracking absolute position over time.
+// "angle_deg" in [0, 360) - the current horizontal lean/swing direction,
+// atan2(ay, ax) of the two horizontal axes converted to degrees. This is a
+// snapshot of which way the stick is leaning right now, not a true
+// integrated swing trajectory (that would need integrating velocity, which
+// drifts badly on a cheap IMU without a fusion filter) - good enough for
+// "which of several directions did you just shake it toward" (see
+// TriArmGlideEffect on the Pi side), not for tracking absolute position
+// over time. At rest (no horizontal deviation) this is arbitrary/noisy -
+// callers should gate on "acceleration" being above their own idle
+// threshold before trusting it, same as before.
 // "battery_pct" is extra - accel_stick.py only reads "acceleration" today
 // (see its json.loads(...)["acceleration"] line), so this field is ignored
 // Pi-side for now, not a breaking change - just future-proofing for a
@@ -40,7 +43,8 @@
 //   3. On-device screen feedback (a live bar for whoever's holding it)
 //   4. Idle power save (screen sleep after a stretch of no motion)
 
-// version on 2026-08-03
+// version on 2026-08-04 - direction reporting switched from a 1D signed
+// dominant-axis lean to a true atan2-based angle_deg, for the 3-arm zone
 
 #include <M5Unified.h>
 #include <math.h>
@@ -75,13 +79,13 @@ static constexpr unsigned long ACTIVE_SEND_INTERVAL_MS = 50;
 // re-read the IMU twice per tick just to get both.
 struct AccelReading {
   float acceleration;  // [0, 1] - shake magnitude, unsigned
-  float direction;     // [-1, 1] - which way it's currently leaning, signed
+  float angle_deg;     // [0, 360) - which way it's currently leaning, in the horizontal plane
 };
 
-// Reads the IMU and returns the current shake magnitude + direction, already
-// clamped to their respective ranges. Pure function of the sensor - no side
-// effects, so sections 2-4 can all call it without needing to coordinate
-// with each other.
+// Reads the IMU and returns the current shake magnitude + swing angle,
+// already clamped/normalised to their respective ranges. Pure function of
+// the sensor - no side effects, so sections 2-4 can all call it without
+// needing to coordinate with each other.
 AccelReading readAcceleration() {
   float ax, ay, az;
   M5.Imu.getAccel(&ax, &ay, &az);  // values in g; self-refreshes internally
@@ -91,28 +95,29 @@ AccelReading readAcceleration() {
   if (acceleration > 1.0f) acceleration = 1.0f;
   if (acceleration < 0.0f) acceleration = 0.0f;
 
-  // Whichever horizontal axis (X or Y) is deviating from rest the most,
-  // signed - Z excluded since held roughly upright it mostly just reads
-  // gravity, not side-to-side swing. Same SENSITIVITY scale as acceleration
-  // so the two stay comparable, but this is a snapshot of current lean, not
-  // an integrated trajectory (see the wire-protocol comment up top).
-  float dominant = (fabsf(ax) >= fabsf(ay)) ? ax : ay;
-  float direction = dominant * SENSITIVITY;
-  if (direction > 1.0f) direction = 1.0f;
-  if (direction < -1.0f) direction = -1.0f;
+  // True 2D swing direction in the horizontal plane (X/Y) - Z excluded
+  // since held roughly upright it mostly just reads gravity, not
+  // side-to-side/forward-back swing. atan2 rather than "pick whichever axis
+  // deviates more" (the old 1D approach) - a 3-way arm split needs the
+  // actual angle, not just a left/right sign. 0 degrees is the stick's +X
+  // axis; which physical direction that corresponds to once mounted is a
+  // site-calibration question, not a firmware one (see
+  // TriArmGlideEffect's ARM_ANGLES_DEG on the Pi side).
+  float angle_deg = atan2f(ay, ax) * (180.0f / (float)M_PI);
+  if (angle_deg < 0.0f) angle_deg += 360.0f;
 
-  return {acceleration, direction};
+  return {acceleration, angle_deg};
 }
 
-void sendReading(float acceleration, float direction, int battery_pct) {
+void sendReading(float acceleration, float angle_deg, int battery_pct) {
   if (battery_pct >= 0) {
-    Serial.printf("{\"acceleration\": %.3f, \"direction\": %.3f, \"battery_pct\": %d}\n", acceleration, direction, battery_pct);
+    Serial.printf("{\"acceleration\": %.3f, \"angle_deg\": %.1f, \"battery_pct\": %d}\n", acceleration, angle_deg, battery_pct);
   } else {
     // Unknown/unavailable battery reading (e.g. running off USB with no
     // cell fitted) - omit the field entirely rather than send a fake -1,
     // same "only include a key when it's actually valid" pattern
     // heart_rate.py's spo2 field uses on the Pi side.
-    Serial.printf("{\"acceleration\": %.3f, \"direction\": %.3f}\n", acceleration, direction);
+    Serial.printf("{\"acceleration\": %.3f, \"angle_deg\": %.1f}\n", acceleration, angle_deg);
   }
 }
 
@@ -242,7 +247,7 @@ void loop() {
     updateBatteryReading(now);
     send_interval = updateIdlePowerSave(reading.acceleration, now);  // may flip display_asleep for next loop
     updateScreen(reading.acceleration, display_asleep);
-    sendReading(reading.acceleration, reading.direction, cached_battery_pct);
+    sendReading(reading.acceleration, reading.angle_deg, cached_battery_pct);
   }
 
   M5.update();  // keeps M5Unified's internal button/touch state fresh
