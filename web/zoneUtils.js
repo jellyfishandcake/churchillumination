@@ -13,14 +13,13 @@
 // global; everything inside it doesn't.
 (function () {
 
-// Matches sketch.js's OFF_STATE_GREY: a plain <canvas> 2D context has no
-// notion of "draw this dim colour over a grey backdrop" the way p5's alpha
-// compositing does, so the grey blend has to be computed by hand per pixel
-// here instead. Display-only - the exact `frame` values are still what's
-// sent to the real LEDs via leds.render_pixels() in main.py; this only
-// changes how dim/off pixels are drawn on a webpage.
-const ZONE_SWATCH_OFF_STATE_GREY = 226;
-
+// Display-only - the exact `frame` values are still what's sent to the real
+// LEDs via leds.render_pixels() in main.py; this only changes how dim/off
+// pixels are drawn on a webpage. Genuinely transparent (real per-pixel
+// alpha in the canvas's own pixel data, not blended toward a hardcoded
+// backdrop colour by hand) - a dim/off LED fades into whatever's actually
+// behind the .swatch-strip element (the zone-card's own background), not a
+// fixed simulated grey that doesn't match every setup's real backdrop.
 function paintSwatchStrip(ctx, canvas, frame) {
   const n = frame.length;
   if (canvas.width !== n) canvas.width = n;
@@ -28,18 +27,17 @@ function paintSwatchStrip(ctx, canvas, frame) {
   for (let i = 0; i < n; i++) {
     const [r, g, b] = frame[i];
     // sqrt, not a straight linear ratio - a plain `brightness/255` alpha
-    // crushes dim-but-saturated pixels toward the grey backdrop almost
-    // completely (e.g. a clearly-red [60,10,10] blends to a near-grey
-    // (187,175,175) - barely readable as "red" at all) even though that
-    // pixel is genuinely saturated in the real data sent to the physical
-    // LEDs. sqrt boosts low alphas disproportionately so dim colours still
-    // read as colours here, while true off/near-zero pixels still fade to
-    // grey as alpha approaches 0.
+    // fades dim-but-saturated pixels almost to invisible (e.g. a clearly-
+    // red [60,10,10] would sit at alpha 0.24) even though that pixel is
+    // genuinely saturated in the real data sent to the physical LEDs. sqrt
+    // boosts low alphas disproportionately so dim colours still read as
+    // colours here, while true off/near-zero pixels still fade out as
+    // alpha approaches 0.
     const alpha = Math.sqrt(Math.max(r, g, b) / 255);
-    imageData.data[i * 4] = r * alpha + ZONE_SWATCH_OFF_STATE_GREY * (1 - alpha);
-    imageData.data[i * 4 + 1] = g * alpha + ZONE_SWATCH_OFF_STATE_GREY * (1 - alpha);
-    imageData.data[i * 4 + 2] = b * alpha + ZONE_SWATCH_OFF_STATE_GREY * (1 - alpha);
-    imageData.data[i * 4 + 3] = 255;
+    imageData.data[i * 4] = r;
+    imageData.data[i * 4 + 1] = g;
+    imageData.data[i * 4 + 2] = b;
+    imageData.data[i * 4 + 3] = Math.round(alpha * 255);
   }
   ctx.putImageData(imageData, 0, 0);
 }

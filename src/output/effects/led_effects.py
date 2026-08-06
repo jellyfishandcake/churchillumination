@@ -537,7 +537,7 @@ class HeartRateEffect:
     recording a partial sample as if it were a real reading."""
 
     HISTORY_SIZE = 20
-    READING_SECONDS = 4.0
+    READING_SECONDS = 10.0
     CHIME_SECONDS = 0.5
     TICK_SECONDS = 0.05
     BPM_RANGE = (40.0, 180.0)  # must match config.yaml's heart_rate zone bpm {min, max}

@@ -405,7 +405,7 @@ async def output_loop(leds, dmx, num_pixels, zones_config, brightness: float = 1
 
             if output["type"] == "led":
                 led_frames[name] = frame
-            elif output["type"] == "dmx" and dmx_universe is not None:
+            elif output["type"] == "dmx":
                 graded_frame = apply_gamma(frame)
                 if brightness != 1.0:
                     # Same post-gamma multiplier the led strip gets below -
@@ -416,19 +416,26 @@ async def output_loop(leds, dmx, num_pixels, zones_config, brightness: float = 1
                     # fixture's actual max, not dim everything else to
                     # compensate.
                     graded_frame = np.clip(graded_frame.astype(np.float32) * brightness, 0, 255).astype(np.uint8)
+                # Populated unconditionally (not just when dmx_universe is
+                # real) - this is the dashboard's preview of what the zone
+                # WOULD send, so it should reflect the effect running even
+                # before the interface is enabled/wired up. Only the actual
+                # hardware write below is gated on dmx_universe existing.
                 dmx_frames[name] = graded_frame
-                channels_layout = output["channels"]
-                # Segment i's channels sit right after segment i-1's, in the
-                # same order tools/test_dmx.py's --start probing confirms
-                # for the real fixture (e.g. 3 channels/segment: segment 0 =
-                # channels start_address..+2, segment 1 = the next 3, ...).
-                base = output["start_address"] - 1  # DMX addresses are 1-based; universe list is 0-based
-                for seg, rgb in enumerate(graded_frame):
-                    values = _fixture_channel_values(channels_layout, rgb)
-                    start = base + seg * len(channels_layout)
-                    for i, value in enumerate(values):
-                        if 0 <= start + i < len(dmx_universe):
-                            dmx_universe[start + i] = value
+                if dmx_universe is not None:
+                    channels_layout = output["channels"]
+                    # Segment i's channels sit right after segment i-1's, in
+                    # the same order tools/test_dmx.py's --start probing
+                    # confirms for the real fixture (e.g. 3 channels/segment:
+                    # segment 0 = channels start_address..+2, segment 1 =
+                    # the next 3, ...).
+                    base = output["start_address"] - 1  # DMX addresses are 1-based; universe list is 0-based
+                    for seg, rgb in enumerate(graded_frame):
+                        values = _fixture_channel_values(channels_layout, rgb)
+                        start = base + seg * len(channels_layout)
+                        for i, value in enumerate(values):
+                            if 0 <= start + i < len(dmx_universe):
+                                dmx_universe[start + i] = value
 
         ordered_led_frames = [led_frames[name] for name in led_ranges]
         full_frame = np.concatenate(ordered_led_frames, axis=0) if ordered_led_frames else np.zeros((0, 3))

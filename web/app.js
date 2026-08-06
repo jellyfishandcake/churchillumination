@@ -50,32 +50,41 @@ sketchSelect.addEventListener("change", () => loadSketchByName(sketchSelect.valu
 loadSketchByName("built-in");
 
 // One entry per zone, keyed by zone name: { zone, canvas, ctx, sourceReadout }.
-// Built once when leds.zones first arrives - zone count/pixel layout is
-// fixed for the process's lifetime.
+// Built once when leds.zones/leds.dmx_zones first arrive - zone count/pixel
+// layout is fixed for the process's lifetime. Two separate maps (not one)
+// because they're painted from two different broadcast fields below -
+// zoneCards (output.type "led") slice led_frame by running offset,
+// dmxZoneCards (output.type "dmx") paint straight from data.dmx_frame[name]
+// - a dmx zone has no slot in led_frame at all, same reasoning main.py's
+// own "leds"/"dmx_zones" split (and admin.js's matching dmxZoneCards) uses.
 const zoneCards = {};
+const dmxZoneCards = {};
 
-function buildZoneCards(zones) {
-  zonesGrid.innerHTML = "";
+function createZoneCard(zone) {
+  const card = document.createElement("div");
+  card.className = "zone-card";
+
+  const heading = document.createElement("h3");
+  heading.textContent = `${zone.name} (${zone.pixels}px)`;
+  card.appendChild(heading);
+
+  const canvas = document.createElement("canvas");
+  canvas.className = "swatch-strip";
+  canvas.width = zone.pixels;
+  canvas.height = 1;
+  card.appendChild(canvas);
+
+  const sourceReadout = document.createElement("div");
+  sourceReadout.className = "source-readout";
+  card.appendChild(sourceReadout);
+
+  zonesGrid.appendChild(card);
+  return { zone, canvas, ctx: canvas.getContext("2d"), sourceReadout };
+}
+
+function buildZoneCards(zones, cardsMap) {
   for (const zone of zones) {
-    const card = document.createElement("div");
-    card.className = "zone-card";
-
-    const heading = document.createElement("h3");
-    heading.textContent = `${zone.name} (${zone.pixels}px)`;
-    card.appendChild(heading);
-
-    const canvas = document.createElement("canvas");
-    canvas.className = "swatch-strip";
-    canvas.width = zone.pixels;
-    canvas.height = 1;
-    card.appendChild(canvas);
-
-    const sourceReadout = document.createElement("div");
-    sourceReadout.className = "source-readout";
-    card.appendChild(sourceReadout);
-
-    zonesGrid.appendChild(card);
-    zoneCards[zone.name] = { zone, canvas, ctx: canvas.getContext("2d"), sourceReadout };
+    cardsMap[zone.name] = createZoneCard(zone);
   }
 }
 
@@ -84,8 +93,14 @@ const wsHandle = window.connectWS((data) => {
 
   if (leds) latestLeds = { num_pixels: leds.num_pixels, layout: leds.layout };
 
-  if (Object.keys(zoneCards).length === 0 && leds?.zones?.length) {
-    buildZoneCards(leds.zones);
+  // Built once, together - zonesGrid.innerHTML is only cleared here, so a
+  // second build call (e.g. dmx_zones arriving on a later tick than zones)
+  // can't wipe out cards the first call already appended.
+  if (Object.keys(zoneCards).length === 0 && Object.keys(dmxZoneCards).length === 0
+      && (leds?.zones?.length || leds?.dmx_zones?.length)) {
+    zonesGrid.innerHTML = "";
+    buildZoneCards(leds.zones || [], zoneCards);
+    buildZoneCards(leds.dmx_zones || [], dmxZoneCards);
   }
 
   if (led_frame) {
@@ -96,6 +111,14 @@ const wsHandle = window.connectWS((data) => {
       paintSwatchStrip(ctx, canvas, slice);
       sourceReadout.textContent = formatSources(resolveSources(data, zone.source));
       offset += zone.pixels;
+    }
+  }
+
+  if (data.dmx_frame) {
+    for (const name in dmxZoneCards) {
+      const { zone, ctx, canvas, sourceReadout } = dmxZoneCards[name];
+      if (data.dmx_frame[name]) paintSwatchStrip(ctx, canvas, data.dmx_frame[name]);
+      sourceReadout.textContent = formatSources(resolveSources(data, zone.source));
     }
   }
 
