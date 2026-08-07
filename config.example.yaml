@@ -12,7 +12,7 @@ server:
   port: 8000
 
 leds:
-  num_pixels: 38   # total APA102 pixels - only counts zones below with output.type "led"; match this to your physical strip length
+  num_pixels: 153   # total APA102 pixels - only counts zones below with output.type "led": heart_rate 60 (1m strip) + accelerometer 93 (4 arms, 36+19+22+16 - see TriArmGlideEffect.ARM_LENGTHS). temp_humidity is a DMX bar now, not counted here. match this to your physical strip length
   layout: strip   # strip|grid|ring — only "strip" is implemented so far (see web/pixelMap.js)
   # Final output multiplier applied after gamma correction, right before
   # pixels go to hardware - the APA102 driver's own brightness byte is
@@ -36,7 +36,7 @@ leds:
   #
   # A zone's source dict keys must match its chosen effect's step()
   # parameter names - organic_wave/organic_comet/organic_twinkle/
-  # reactive_glow all take `intensity`; temp_humidity_matrix takes
+  # reactive_glow all take `intensity`; temp_humidity_bar takes
   # `temperature`+`humidity`; tri_arm_glide takes `intensity`+`angle`;
   # audio_reactive_wave takes `loudness`+`motion`+`env_brightness`+`ripple`;
   # heart_rate_check_in takes `intensity`+`bpm`, same as pulse. See
@@ -70,45 +70,48 @@ leds:
   #     flag - don't assume it from a spec sheet.
   zones:
     - name: ambient
-      effect: audio_reactive_wave   # organic_wave | organic_comet | organic_twinkle | pulse | temp_humidity_matrix | tri_arm_glide | audio_reactive_wave | heart_rate_check_in
+      effect: audio_reactive_wave   # organic_wave | organic_comet | organic_twinkle | pulse | temp_humidity_bar | reactive_glow | tri_arm_glide | audio_reactive_wave | heart_rate_check_in
       palette: winter            # any key in colour_palette.PALETTES / palettes.json
       source:
         loudness: sensors.loudness                                # picks position in the palette gradient - see AudioReactiveWaveEffect's docstring
         motion: sensors.motion                                    # drives wave speed
         env_brightness: {path: sensors.lux, min: 0, max: 500}     # keeps the strip visible against room light rather than reacting to loudness/motion - untested placeholder range, recalibrate on-site
         ripple: interactions.audio_ripple                         # laughter/applause/cheering/music flash - see intelligence/audio_moments.py
-      output: {type: dmx, start_address: 1, channels: [r, g, b]}
+      output: {type: dmx, start_address: 1, channels: [r, g, b], pixels: 8}   # RGB fixture, 8 segments x 3 big bulbs each - confirmed via test_dmx.py --start probing
     - name: temp_humidity
-      layout: matrix   # documentation/wiring metadata only - still one flat pixel range,
-      rows: 4          # wired serpentine to match, not a separate electrical output
-      cols: 5
-      effect: temp_humidity_matrix
+      effect: temp_humidity_bar   # was temp_humidity_matrix on a spatial LED panel idea - physical build settled on a DMX bar instead, see led_effects.py's TempHumidityBarEffect docstring
       palette: winter
       source:
         temperature: {path: sensors.temperature, min: 15, max: 30}
         humidity: {path: sensors.humidity, min: 20, max: 70}
-        activity: state.activity_level   # drives a subtle shimmer - see TempHumidityMatrixEffect's docstring
+        activity: state.activity_level   # drives a subtle shimmer - see TempHumidityBarEffect's docstring
         contrast: {path: sensors.indoor_outdoor_temp_diff, min: 0, max: 15}   # indoor/outdoor divergence - see main.py's sensor_loop
-      output: {type: led, pixels: 20}
+      # RGBW bar fixture, 28 independently-addressable segments (confirmed
+      # 2026-08-07) - 4 channels/segment x 28 = 112 DMX channels.
+      # start_address 25 is a placeholder (the block right after ambient's
+      # confirmed channels 1-24) - not yet confirmed against this fixture's
+      # own DIP switches; run tools/test_dmx.py --start 25 before trusting it.
+      output: {type: dmx, start_address: 25, channels: [r, g, b, w], pixels: 28}
     - name: heart_rate
       effect: heart_rate_check_in   # start/read/end check-in flow, not a continuous display - see HeartRateEffect's docstring
       palette: festive
       source:
         intensity: heart_rate.engaged        # bool -> 1.0/0.0, rising edge starts a new reading session
         bpm: {path: heart_rate.bpm, min: 40, max: 180}   # must match HeartRateEffect.BPM_RANGE
-      output: {type: led, pixels: 6}
+      output: {type: led, pixels: 60}   # 1m strip, confirmed 2026-08-07
     - name: accelerometer
       effect: tri_arm_glide   # swing glides from hub to tip on whichever arm(s) the angle points toward - see TriArmGlideEffect's docstring
       palette: autumn
       source:
         intensity: sensors.acceleration                              # raw shake magnitude, 0..1
         angle: {path: sensors.angle_deg, min: 0, max: 360}            # swing angle -> 0..1
-      # Continuous-strip zone now (was a single-pixel DMX fixture on
-      # start_address 4 - now free) - three arms radiating from a shared
-      # hub, spliced onto the same chain as heart_rate. 12 = 4px/arm x 3
-      # arms is a placeholder guess; the physical shape isn't cut/soldered
-      # yet - confirm/replace once it is, and match leds.num_pixels above.
-      output: {type: led, pixels: 12}
+      # Continuous-strip zone, spliced onto the same chain as heart_rate.
+      # 93 = 36+19+22+16, confirmed 2026-08-07: 4 arms radiating from a
+      # shared hub (design changed from the original 3-arm idea), unequal
+      # lengths - see TriArmGlideEffect.ARM_LENGTHS. ARM_ANGLES_DEG/
+      # ARM_REVERSED there are still placeholders pending on-site
+      # angle/wiring-direction measurement.
+      output: {type: led, pixels: 93}
 
 # Interface-level DMX512 settings - which zones actually send to it, and
 # each fixture's start_address/channels, are configured per-zone above

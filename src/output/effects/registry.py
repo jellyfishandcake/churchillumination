@@ -7,11 +7,11 @@ config.py's leds.zones defaults uses. main.py looks names up here rather
 than hardcoding the mapping itself, so there's exactly one place that has
 to agree with the web UI's <select> options.
 
-Every zone (a large ambient panel or a small cutout like heart-rate) picks
+Every zone (a large ambient bar or a small cutout like heart-rate) picks
 one effect class from the same registry below - just its own palette and
 its own named source(s) (see main.py's led_loop/_resolve_sources). Most
 effects take a single `intensity` kwarg (organic_wave/organic_comet/
-organic_twinkle/reactive_glow); temp_humidity_matrix takes
+organic_twinkle/reactive_glow); temp_humidity_bar takes
 `temperature`+`humidity`, plus an optional `activity` for its shimmer (see
 its own docstring); pulse takes `intensity`+`bpm` (bpm times its per-beat
 flash to the wearer's actual heart rate - see PulseEffect's docstring);
@@ -24,19 +24,24 @@ continuous display (see HeartRateEffect's own docstring) - a zone's
 configured `source` dict keys must match whichever effect it's assigned,
 since led_loop calls effect.step(**sources).
 
-reactive_glow is the one to reach for on a single-pixel DMX zone
-(output.type: dmx, no `pixels` set) - organic_wave/organic_comet all vary
-colour or position *across pixel positions*, which a single DMX fixture
-doesn't have (see ReactiveGlowEffect's own docstring for the specific bug
-this avoids in organic_comet's case). tri_arm_glide is specific to the
-accelerometer zone's three-armed `led` layout (output.type: led, one
-continuous chain split into three equal-ish spokes) - not meant to be
-picked for an arbitrary zone the way the other effects are.
+reactive_glow is the one to reach for on a single-segment DMX zone whose
+source is just `intensity` (output.type: dmx, no `pixels` set, or
+pixels: 1) - organic_wave/organic_comet all vary colour or position
+*across pixel positions*, which a single DMX fixture doesn't have (see
+ReactiveGlowEffect's own docstring for the specific bug this avoids in
+organic_comet's case). temp_humidity_bar is DMX too (as of the weather
+zone's move off the old LED-matrix idea onto a dedicated RGBW bar fixture)
+but isn't a reactive_glow candidate despite that overlap - its source
+shape (`temperature`+`humidity`, not `intensity`) doesn't reduce to a
+plain reactive_glow input regardless of segment count. tri_arm_glide is
+specific to the accelerometer zone's three-armed `led` layout (output.type:
+led, one continuous chain split into three equal-ish spokes) - not meant to
+be picked for an arbitrary zone the way the other effects are.
 """
 
 from .led_effects import (
     OrganicWaveEffect, OrganicCometEffect, OrganicTwinkleEffect,
-    PulseEffect, TempHumidityMatrixEffect, ReactiveGlowEffect,
+    PulseEffect, TempHumidityBarEffect, ReactiveGlowEffect,
     TriArmGlideEffect, AudioReactiveWaveEffect, HeartRateEffect,
 )
 
@@ -45,7 +50,7 @@ EFFECTS = {
     "organic_comet": OrganicCometEffect,
     "organic_twinkle": OrganicTwinkleEffect,
     "pulse": PulseEffect,
-    "temp_humidity_matrix": TempHumidityMatrixEffect,
+    "temp_humidity_bar": TempHumidityBarEffect,
     "reactive_glow": ReactiveGlowEffect,
     "tri_arm_glide": TriArmGlideEffect,
     "audio_reactive_wave": AudioReactiveWaveEffect,

@@ -12,7 +12,7 @@ DEFAULTS = {
     # boundary if ever exposed further than that.
     "server": {"host": "0.0.0.0", "port": 8000},
     "leds": {
-        "num_pixels": 38,  # total APA102 pixels - only counts zones below with output.type "led"; match this to your physical strip length
+        "num_pixels": 153,  # total APA102 pixels - only counts zones below with output.type "led": heart_rate 60 + accelerometer 93 (4 arms, 36+19+22+16 - see TriArmGlideEffect.ARM_LENGTHS). temp_humidity is a DMX bar now, not counted here. match this to your physical strip length
         "layout": "strip",
         # Final output multiplier, applied after gamma correction (see
         # led_effects.apply_gamma) right before pixels go to hardware. The
@@ -67,17 +67,22 @@ DEFAULTS = {
                     "env_brightness": {"path": "sensors.lux", "min": 0, "max": 500},
                     "ripple": "interactions.audio_ripple",
                 },
-                "output": {"type": "dmx", "start_address": 1, "channels": ["r", "g", "b"]},
+                "output": {"type": "dmx", "start_address": 1, "channels": ["r", "g", "b"], "pixels": 8},
             },
             {
                 "name": "temp_humidity",
-                "layout": "matrix", "rows": 4, "cols": 5,  # documentation/wiring metadata only
-                "effect": "temp_humidity_matrix", "palette": "winter",
+                # Was temp_humidity_matrix on a spatial LED panel idea - the
+                # physical build settled on a DMX bar instead (RGBW, 28
+                # segments, confirmed 2026-08-07) - see led_effects.py's
+                # TempHumidityBarEffect docstring. start_address 25 is a
+                # placeholder pending confirmation against the fixture's own
+                # DIP switches, same as ambient's address once was.
+                "effect": "temp_humidity_bar", "palette": "winter",
                 "source": {
                     "temperature": {"path": "sensors.temperature", "min": 15, "max": 30},
                     "humidity": {"path": "sensors.humidity", "min": 20, "max": 70},
                 },
-                "output": {"type": "led", "pixels": 20},
+                "output": {"type": "dmx", "start_address": 25, "channels": ["r", "g", "b", "w"], "pixels": 28},
             },
             {
                 "name": "heart_rate",
@@ -89,7 +94,7 @@ DEFAULTS = {
                     "intensity": "heart_rate.engaged",
                     "bpm": {"path": "heart_rate.bpm", "min": 40, "max": 180},
                 },
-                "output": {"type": "led", "pixels": 6},
+                "output": {"type": "led", "pixels": 60},  # 1m strip, confirmed 2026-08-07
             },
             {
                 "name": "accelerometer",
@@ -97,19 +102,20 @@ DEFAULTS = {
                 # angle rescaled the same way temperature/humidity are -
                 # accel_stick's raw [0, 360) swing angle maps to 0..1, see
                 # TriArmGlideEffect's docstring. This used to be a single-
-                # pixel DMX fixture (DirectionalWaveEffect on start_address
-                # 4) - now a continuous-strip `led` zone instead, spliced
-                # onto the same chain as heart_rate, since the physical
-                # design moved to three arms radiating from a shared hub
-                # rather than one linear bar. DMX address 4 is free again.
+                # pixel DMX fixture (DirectionalWaveEffect) - now a
+                # continuous-strip `led` zone instead, spliced onto the same
+                # chain as heart_rate, since the physical design moved to
+                # arms radiating from a shared hub rather than one linear bar.
                 "source": {
                     "intensity": "sensors.acceleration",
                     "angle": {"path": "sensors.angle_deg", "min": 0, "max": 360},
                 },
-                # 12 = 4px/arm x 3 arms - a placeholder guess, not measured:
-                # the physical shape isn't cut/soldered yet. Confirm/replace
-                # once it is, and match num_pixels above to the real total.
-                "output": {"type": "led", "pixels": 12},
+                # 93 = 36+19+22+16, confirmed 2026-08-07: 4 arms (design
+                # changed from the original 3-arm idea), unequal lengths -
+                # see TriArmGlideEffect.ARM_LENGTHS. ARM_ANGLES_DEG/
+                # ARM_REVERSED there are still placeholders pending on-site
+                # angle/wiring-direction measurement.
+                "output": {"type": "led", "pixels": 93},
             },
         ],
     },

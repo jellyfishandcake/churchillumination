@@ -356,7 +356,7 @@ async def output_loop(leds, dmx, num_pixels, zones_config, brightness: float = 1
 
     # Per-zone: (current_effect_name, current_palette_name, effect_instance,
     # last_frame, broken). `broken` is set when an effect's step() params
-    # don't match this zone's source keys (e.g. temp_humidity_matrix on a
+    # don't match this zone's source keys (e.g. temp_humidity_bar on a
     # zone that only defines `intensity`) - once set, that zone just holds
     # last_frame without retrying step() every tick (same TypeError every
     # time otherwise, and the same "only log on the transition into

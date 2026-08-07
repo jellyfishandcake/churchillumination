@@ -346,11 +346,15 @@ class ReactiveGlowEffect:
 
 
 class TriArmGlideEffect:
-    """For the accelerometer zone once it's three LED arms radiating from a
-    shared hub at 120 degrees apart, spliced into the same continuous APA102
-    chain as the heart_rate zone (not a standalone DMX fixture like the
-    single-bar DirectionalWaveEffect this replaces) - see accel_stick.ino's
-    atan2-based `angle_deg` and config.py's accelerometer zone.
+    """For the accelerometer zone's LED arms radiating from a shared hub,
+    spliced into the same continuous APA102 chain as the heart_rate zone
+    (not a standalone DMX fixture like the single-bar DirectionalWaveEffect
+    this replaces) - see accel_stick.ino's atan2-based `angle_deg` and
+    config.py's accelerometer zone. Name/class kept as "tri" from the
+    original 3-arm-at-120-degrees design even though the physical build
+    (confirmed 2026-08-07) settled on 4 arms at ergonomics/visual-design-
+    driven angles, not an even split - ARM_COUNT below is what actually
+    governs arm count, not the class name.
 
     `angle` arrives pre-rescaled to 0..1 by main.py's _resolve_one_source
     (the zone's source config supplies {min: 0, max: 360} - see config.py)
@@ -359,11 +363,19 @@ class TriArmGlideEffect:
 
     Each arm claims a smooth ~180-degree-wide slice of the circle centred
     on its own spoke, via a clamped cosine falloff: weight = max(0,
-    cos(angle - arm_centre)). With arms exactly 120 degrees apart this
-    self-limits to at most two arms active at once, both getting equal
-    weight exactly on the boundary between them - a swing angled between
-    two arms lights both, proportionally, rather than snapping hard at the
-    60-degree midpoint.
+    cos(angle - arm_centre)). This self-limiting-to-two-arms property (each
+    weight window is exactly 180 degrees wide, so two windows only overlap
+    if their centres are within 180 degrees of each other - never all-zero,
+    never more than two nonzero at typical spacings) only strictly holds
+    when arms are evenly spaced *and* no closer together than 120 degrees;
+    with ARM_ANGLES_DEG now arbitrary/ergonomic rather than an even split,
+    arms placed closer together than that can overlap into 3+ simultaneously
+    weighted arms, or (if two arms end up more than 180 degrees apart from
+    every other arm) leave a dead gap where no arm has positive weight for a
+    stretch of angles - acceptable for now since the exact angles are still
+    unmeasured, but worth another look once ARM_ANGLES_DEG below is real:
+    if the physical layout clusters arms tightly, a narrower falloff than a
+    plain cosine may read better than this effect currently gives.
 
     "Glide out": while a swing keeps an arm's weight * intensity above
     IDLE_THRESHOLD, that arm's head advances from the hub (distance 0)
@@ -374,26 +386,33 @@ class TriArmGlideEffect:
     next swing toward this arm starts from the centre again, not wherever
     the last one left off.
 
-    n_pixels doesn't split evenly across ARM_COUNT in general - the last
-    arm absorbs the remainder, same "pad the odd one out" idea output_loop
-    already uses when a zone's total doesn't divide cleanly.
+    ARM_LENGTHS gives each arm's pixel count explicitly (confirmed
+    2026-08-07: 36/19/22/16, physically unequal, so the old "split n_pixels
+    evenly across ARM_COUNT" approach no longer applies) - arm order here is
+    just index order, not yet tied to a physical arm identity. If the actual
+    zone's n_pixels doesn't match sum(ARM_LENGTHS) (e.g. a config typo), the
+    last arm absorbs the difference so the strip is still exactly filled,
+    same "pad the odd one out" idea output_loop uses for a mismatched zone.
 
-    ARM_ANGLES_DEG and ARM_REVERSED below are placeholders - the physical
-    shape isn't cut/soldered yet (it'll be one continuous strip bent/spliced
-    into three arms, not three separate fixtures). Once it is:
+    ARM_ANGLES_DEG and ARM_REVERSED below are still placeholders - which
+    physical arm each ARM_LENGTHS entry actually corresponds to, its real
+    angle, and its wiring direction are all pending an on-site measurement
+    pass (angles are ergonomic/visual-design choices, not an even split, and
+    per-arm wiring direction is driven by physical routing/cable-run
+    constraints - some arms wired hub-to-tip, others tip-to-hub, not a
+    simple alternating pattern). Once known:
     - ARM_ANGLES_DEG: swing the stick toward each arm in turn and watch
       `sensors.angle_deg` on the admin dashboard; set each arm's entry to
-      the angle that lit it, rather than assuming 0/120/240 in stick-frame
-      degrees actually lines up with the arms as mounted.
-    - ARM_REVERSED: assumes every arm is wired hub-to-tip in increasing
-      pixel order within its slice of the strip. Flip an entry to True if
-      that arm's data line actually runs tip-to-hub once soldered (likely
-      for at least one arm, since a single continuous chain snaking hub -
-      tip - hub - tip - hub - tip alternates direction every other arm)."""
+      the angle that lit it.
+    - ARM_REVERSED: True for an arm whose data line runs tip-to-hub in
+      increasing pixel order within its slice of the strip, False for
+      hub-to-tip - check each arm individually rather than assuming a
+      pattern across arms."""
 
-    ARM_COUNT = 3
-    ARM_ANGLES_DEG = (0.0, 120.0, 240.0)   # placeholder - recalibrate on-site, see docstring
-    ARM_REVERSED = (False, False, False)   # placeholder - recalibrate on-site, see docstring
+    ARM_COUNT = 4
+    ARM_LENGTHS = (36, 19, 22, 16)                  # confirmed 2026-08-07 - see docstring; order not yet tied to a physical arm
+    ARM_ANGLES_DEG = (0.0, 90.0, 180.0, 270.0)      # placeholder - recalibrate on-site, see docstring
+    ARM_REVERSED = (False, False, False, False)     # placeholder - recalibrate on-site, see docstring
     IDLE_THRESHOLD = 0.08                  # below this arm-weight*intensity, that arm isn't "being swung toward"
     GLIDE_SPEED = 0.6                      # pixels/tick at intensity=1.0 - tune once the arm length is real
 
@@ -403,9 +422,8 @@ class TriArmGlideEffect:
         self.background = self.lut[0] * background_level
         self.trail = np.zeros(n_pixels)
 
-        base = n_pixels // self.ARM_COUNT
-        lengths = [base] * self.ARM_COUNT
-        lengths[-1] += n_pixels - base * self.ARM_COUNT  # last arm absorbs the remainder
+        lengths = list(self.ARM_LENGTHS)
+        lengths[-1] += n_pixels - sum(lengths)  # last arm absorbs any mismatch against the zone's real pixel count
         starts = np.cumsum([0] + lengths[:-1]).tolist()
         self.arm_ranges = list(zip(starts, lengths))  # (start, length) per arm, in the shared trail array
         self.arm_center_rad = [np.radians(deg) for deg in self.ARM_ANGLES_DEG]
@@ -627,19 +645,22 @@ class HeartRateEffect:
         return np.clip(frame, 0, 255).astype(np.uint8)
 
 
-class TempHumidityMatrixEffect:
+class TempHumidityBarEffect:
     """`temperature` picks a position along the palette gradient (cool end
-    <-> warm end), `humidity` scales overall brightness - still one
-    combined base colour across the panel, not a spatial pattern driven by
-    the matrix's actual rows/cols (that's future work once there's a
-    physical panel to tune against). On top of that base colour:
+    <-> warm end), `humidity` scales overall brightness - one combined base
+    colour across the zone (was originally imagined as a spatial LED matrix
+    panel - hence the class's old name - but the physical build settled on
+    a DMX bar fixture instead; a DMX zone's "pixels" are independently
+    addressable fixture segments, not screen-like rows/cols, and this
+    effect never actually did 2D addressing, so the rename is a pure
+    naming fix, not a behaviour change). On top of that base colour:
 
     - `activity` (state.activity_level - same signal the ambient zone
       reacts to, so this zone's liveliness stays in sync with it rather
-      than reading as a separate, disconnected panel) drives a subtle
-      per-pixel shimmer: a calm room leaves the panel essentially flat and
+      than reading as a separate, disconnected zone) drives a subtle
+      per-segment shimmer: a calm room leaves the bar essentially flat and
       static like before, a lively one gets a slow, visible noise-driven
-      variation across the pixels.
+      variation across segments.
     - `contrast` (how far indoor temperature has drifted from outdoor -
       see main.py's indoor_outdoor_temp_diff) pushes the displayed colour
       further toward whichever end of the palette it's already closest to
