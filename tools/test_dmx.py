@@ -22,6 +22,16 @@ Usage:
                                                               # once (space-separated) to test a guessed
                                                               # layout, e.g. a guessed RGBW mode:
                                                               #   python -m tools.test_dmx raw 112=0 113=0 114=0 115=255
+    python -m tools.test_dmx bar 255 0 0 0 --start 25 --count 28 --channels rgbw
+                                                              # repeats one colour across N independently-
+                                                              # addressable segments (same "pixels" meaning as
+                                                              # a zone's output.pixels) - for bringing up a
+                                                              # multi-segment bar (e.g. the whole weather zone's
+                                                              # fixture) without going through config.yaml or
+                                                              # any sensor at all. --channels sets the per-
+                                                              # segment layout/order (values in that order),
+                                                              # matching a zone's output.channels - default
+                                                              # 'rgb' (3 values), pass 'rgbw' for a 4th value.
 """
 import argparse
 import time
@@ -49,15 +59,18 @@ def _run(fn):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", choices=["ports", "solid", "cycle", "blackout", "raw"])
-    # Untyped/unparsed here since the two commands that use this need different
-    # shapes ('solid' wants 3 ints; 'raw' wants channel=value strings) - each
-    # branch below parses its own args out of this shared list rather than
-    # this needing two separate nargs="*" positionals (which argparse can't
-    # unambiguously split between anyway).
-    parser.add_argument("args_list", nargs="*", help="'solid': r g b (0-255). 'raw': one or more channel=value pairs (1-based channel, 0-255 value)")
+    parser.add_argument("command", choices=["ports", "solid", "cycle", "blackout", "raw", "bar"])
+    # Untyped/unparsed here since the commands that use this need different
+    # shapes ('solid' wants 3 ints; 'raw' wants channel=value strings; 'bar'
+    # wants one int per --channels entry) - each branch below parses its own
+    # args out of this shared list rather than this needing several separate
+    # nargs="*" positionals (which argparse can't unambiguously split between
+    # anyway).
+    parser.add_argument("args_list", nargs="*", help="'solid': r g b (0-255). 'raw': one or more channel=value pairs (1-based channel, 0-255 value). 'bar': one value per --channels entry")
     parser.add_argument("--start", type=int, default=1, help="DMX start channel, 1-based (default: 1)")
     parser.add_argument("--port", default=None, help="explicit serial port, e.g. COM5 - overrides auto-detect")
+    parser.add_argument("--channels", default="rgb", help="'bar' only: per-segment channel layout/order, e.g. 'rgb' or 'rgbw' - matches a zone's output.channels (default: rgb)")
+    parser.add_argument("--count", type=int, default=1, help="'bar' only: number of consecutive segments to repeat the colour across, same meaning as a zone's output.pixels (default: 1)")
     args = parser.parse_args()
 
     if args.command == "ports":
@@ -104,6 +117,27 @@ def main():
             universe[channel - 1] = value
             set_channels[channel] = value
         print(f"Sending {set_channels} (every other channel at 0, Ctrl+C to stop)...")
+
+        def send_forever():
+            while True:
+                dmx.send_channels(universe)
+                time.sleep(0.05)
+
+        _run(send_forever)
+        return
+
+    if args.command == "bar":
+        layout = list(args.channels)
+        if len(args.args_list) != len(layout):
+            raise SystemExit(f"bar needs exactly {len(layout)} value(s) for --channels {args.channels!r}: {' '.join(layout)}")
+        values = [int(v) for v in args.args_list]
+        universe = [0] * UNIVERSE_SIZE
+        for seg in range(args.count):
+            base = args.start - 1 + seg * len(layout)
+            for i, v in enumerate(values):
+                if 0 <= base + i < UNIVERSE_SIZE:
+                    universe[base + i] = v
+        print(f"Sending {dict(zip(layout, values))} to {args.count} segment(s) ({len(layout)} ch each) starting at channel {args.start} (Ctrl+C to stop)...")
 
         def send_forever():
             while True:
