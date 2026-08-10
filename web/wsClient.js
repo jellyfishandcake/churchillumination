@@ -1,7 +1,7 @@
 // wsClient.js — shared websocket connect/reconnect boilerplate used by both
 // app.js (public dashboard) and admin.js (admin terminal), so admin.js
 // doesn't need to duplicate this or reuse app.js against a DOM it doesn't
-// match (app.js assumes public-page elements like #noise-value that don't
+// match (app.js assumes public-page elements like #zones-grid that don't
 // exist on admin.html).
 //
 // onMessage(data) is called with the already-JSON-parsed payload of every

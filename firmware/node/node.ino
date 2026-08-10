@@ -64,6 +64,9 @@ static const char *NODE_ID = "node1";
 static const char *TOPIC_PREFIX = "esp32";
 static const unsigned long PUBLISH_INTERVAL_MS = 200;  // 5Hz - plenty for ambient sensing, keeps WiFi/MQTT traffic light
 
+static float g_raw_rms = 0.0f;
+static float g_raw_thermal = 0.0f;
+
 WiFiClient wifi_client;
 PubSubClient mqtt_client(wifi_client);
 
@@ -157,15 +160,21 @@ void setupMic() {
   }
 }
 
+static const float MIC_GAIN = 10.0f;   // set from calibration; 10.0 is a placeholder
+
 float readLoudness() {
-  int32_t peak = 0;
-  unsigned long window_start = millis();
-  while (millis() - window_start < MIC_WINDOW_MS) {
-    int sample = i2s_mic.read();
-    int32_t abs_sample = abs(sample);
-    if (abs_sample > peak) peak = abs_sample;
+  static int16_t buf[512];
+  size_t bytes_read = i2s_mic.readBytes((char *)buf, sizeof(buf));
+  int samples = bytes_read / sizeof(int16_t);
+  if (samples <= 0) { g_raw_rms = 0.0f; return 0.0f; }
+
+  double sum_sq = 0.0;
+  for (int i = 0; i < samples; i++) {
+    double s = buf[i] / 32768.0;
+    sum_sq += s * s;
   }
-  return min(1.0f, peak / 32768.0f);  // 16-bit signed PCM range
+  g_raw_rms = sqrt(sum_sq / samples);      // uncalibrated, published for tuning
+  return min(1.0f, g_raw_rms * MIC_GAIN);
 }
 
 // ---------------------------------------------------------------------------
@@ -221,6 +230,7 @@ float readMotion() {
       diff_sum += fabs(frame[i] - prev_frame[i]);
     }
     float mean_diff = diff_sum / PIXEL_NUM;  // average change, in degrees C
+    g_raw_thermal = mean_diff;
     motion = min(1.0f, mean_diff * MOTION_SENSITIVITY);
   }
 
@@ -253,6 +263,14 @@ float presenceFromMotion(float motion) {
 
 void setup() {
   Serial.begin(115200);
+  // find address for i2c devices
+  #include <Wire.h>
+  Wire.begin();
+  for (uint8_t a = 1; a < 127; a++) {
+    Wire.beginTransmission(a);
+    if (Wire.endTransmission() == 0) Serial.printf("[i2c] device at 0x%02X\n", a);
+  }
+
   delay(1000);  // let the Serial console catch up before the first prints
 
   setupMic();
@@ -281,10 +299,13 @@ void loop() {
   float motion = readMotion();
   float presence = presenceFromMotion(motion);
 
-  char payload[128];
+  // add raw values to payload 
+  char payload[192];                       // was 128; raw fields need the room
   snprintf(payload, sizeof(payload),
-           "{\"loudness\": %.3f, \"motion\": %.3f, \"presence\": %.3f}",
-           loudness, motion, presence);
+           "{\"loudness\": %.3f, \"motion\": %.3f, \"presence\": %.3f, "
+           "\"raw_rms\": %.5f, \"raw_thermal\": %.4f}",
+           loudness, motion, presence, g_raw_rms, g_raw_thermal);
+
 
   String topic = String(TOPIC_PREFIX) + "/" + NODE_ID + "/sense";
   if (mqtt_client.connected()) {

@@ -1,53 +1,18 @@
-// app.js — connects to the Python server, keeps the public dashboard alive,
-// and renders each zone's live LED output plus whichever sketch is
-// currently selected. The selected sketch runs inside a sandboxed iframe
-// (see sketchSandbox.js/web/sketchRunner.html) rather than sharing this
-// page's window - so unlike before, this file no longer exposes
-// window.sensors/window.appState itself; it posts the same data into the
-// sandbox instead. Read-only: effect/palette controls live in admin.html's
-// Zones tab, not here - see server.py's ADMIN_ACTIONS.
+// app.js — connects to the Python server and renders each zone's live LED
+// output on the public dashboard. Read-only: effect/palette controls live
+// in admin.html's Zones tab, not here - see server.py's ADMIN_ACTIONS.
+//
+// Sketch running/upload (create.html, the sandboxed iframe - see
+// sketchSandbox.js/web/sketchRunner.html) is deliberately not embedded on
+// this page - it doesn't drive the real LEDs yet (output_loop runs each
+// zone's own configured effect, full stop), so showing it here read as
+// more confusing than useful. create.html/cast.html are untouched and
+// still work standalone; picking this back up is future work.
 
-const { paintSwatchStrip, resolveSources, formatSources, buildSelectOptions } = window.zoneUtils;
+const { paintSwatchStrip, resolveSources, formatSources } = window.zoneUtils;
 
 const status = document.getElementById("status");
 const zonesGrid = document.getElementById("zones-grid");
-const sampledFrameCanvas = document.getElementById("sampled-frame-canvas");
-const sampledFrameCtx = sampledFrameCanvas.getContext("2d");
-const sketchSelect = document.getElementById("sketch-select");
-const sketchError = document.getElementById("sketch-error");
-const sketchContainer = document.getElementById("sketch-container");
-
-const sandbox = window.createSketchSandbox(sketchContainer);
-
-// {num_pixels, layout} - set once the server's leds config first arrives,
-// read by wireSandboxLeds below whenever the sandboxed sketch reports its
-// canvas size (which can happen again after loadSketch() reloads the
-// iframe for a newly picked sketch).
-let latestLeds = null;
-const knownSketchNames = new Set(["built-in"]);
-
-window.wireSandboxLeds(sandbox, () => latestLeds);
-
-sandbox.onError((message) => {
-  sketchError.textContent = `Sketch error: ${message}`;
-});
-
-async function loadSketchByName(name) {
-  const url = name === "built-in" ? "/sketch.js" : `/sketches/${encodeURIComponent(name)}.js`;
-  try {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-    const code = await res.text();
-    sketchError.textContent = "";
-    sandbox.loadSketch(code);
-  } catch (err) {
-    sketchError.textContent = `Couldn't load sketch "${name}": ${err.message}`;
-  }
-}
-
-sketchSelect.innerHTML = '<option value="built-in">Built-in demo</option>';
-sketchSelect.addEventListener("change", () => loadSketchByName(sketchSelect.value));
-loadSketchByName("built-in");
 
 // One entry per zone, keyed by zone name: { zone, canvas, ctx, sourceReadout }.
 // Built once when leds.zones/leds.dmx_zones first arrive - zone count/pixel
@@ -88,10 +53,8 @@ function buildZoneCards(zones, cardsMap) {
   }
 }
 
-const wsHandle = window.connectWS((data) => {
-  const { state, leds, led_frame, sketches } = data;
-
-  if (leds) latestLeds = { num_pixels: leds.num_pixels, layout: leds.layout };
+window.connectWS((data) => {
+  const { leds, led_frame } = data;
 
   // Built once, together - zonesGrid.innerHTML is only cleared here, so a
   // second build call (e.g. dmx_zones arriving on a later tick than zones)
@@ -121,33 +84,4 @@ const wsHandle = window.connectWS((data) => {
       sourceReadout.textContent = formatSources(resolveSources(data, zone.source));
     }
   }
-
-  // Diff-append any newly uploaded sketch name - same "appear at any time"
-  // pattern the palette pickers elsewhere in this project already use.
-  if (sketches) {
-    const missing = sketches.filter((name) => !knownSketchNames.has(name));
-    for (const name of missing) knownSketchNames.add(name);
-    if (missing.length) buildSelectOptions(sketchSelect, missing);
-  }
-
-  sandbox.sendHelpers(window.helpersFromBroadcast(data));
-
-  // Update the DOM dashboard. Noise isn't split out from activity_level
-  // server-side yet - approximated the same way it always has been.
-  document.getElementById("noise-value").textContent = state.activity_level.toFixed(2);
-  document.getElementById("noise-bar").style.width = `${state.activity_level * 100}%`;
-  document.getElementById("activity-value").textContent = state.activity_level.toFixed(2);
-  document.getElementById("activity-bar").style.width = `${state.activity_level * 100}%`;
-  document.getElementById("mood-value").textContent = state.mood;
-  document.getElementById("presence-value").textContent = state.presence_count;
-  document.getElementById("audio-scene-value").textContent = state.audio_scene ?? "—";
 }, status);
-
-// Currently unconsumed server-side (led_loop runs each zone's own selected
-// effect instead) - kept for its own visual/demo value, same as before the
-// sandbox existed. Painted locally into the "sampled from sketch" swatch,
-// distinct from each zone's real LED output (painted above from led_frame).
-sandbox.onPixels((pixels) => {
-  paintSwatchStrip(sampledFrameCtx, sampledFrameCanvas, pixels);
-  wsHandle.send({ pixels });
-});

@@ -7,105 +7,54 @@
   <style>
     body {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: 1fr 300px;
       gap: 2rem;
       max-width: 1200px;
       margin-inline: auto;
+      align-items: start;
     }
     h1 { grid-column: 1 / -1; }
-    .metric { display: flex; justify-content: space-between; padding: 0.5rem 0; border-bottom: 1px solid var(--hairline); }
-    .metric:last-child { border-bottom: none; }
-    .metric-label { color: var(--muted); }
-    .metric-value { font-variant-numeric: tabular-nums; font-weight: 500; }
-    .bar { height: 6px; background: var(--hairline); border-radius: 3px; overflow: hidden; margin-top: 0.25rem; }
-    .bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width 100ms; }
-    #sketch-panel { grid-column: 1 / -1; }
-    #sketch-toolbar { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem; }
-    #sketch-toolbar h2 { margin: 0; }
-    #sketch-toolbar a { margin-left: auto; font-size: 0.85rem; color: var(--accent); }
-    #sketch-error { color: var(--error); font-size: 0.85rem; min-height: 1.2em; }
-    #sketch-container { background: #e2e2e2; border-radius: 8px; overflow: hidden; }
-    #sketch-container iframe.sketch-frame { display: block; width: 100%; aspect-ratio: 1200 / 100; border: none; }
-    .stage-label { color: var(--muted); font-size: 0.8rem; }
-    .stage-label small { display: block; color: var(--muted); opacity: 0.75; font-size: 0.72rem; margin-top: 0.15rem; }
-    #admin-link { grid-column: 1 / -1; text-align: right; font-size: 0.85rem; }
-    #admin-link a { color: var(--muted); }
-    #qr-panel { display: flex; align-items: center; gap: 1rem; }
-    #qr-panel img { width: 90px; height: 90px; border-radius: 4px; background: #fff; padding: 4px; border: 1px solid var(--hairline); }
-    #qr-panel p { margin: 0; color: var(--muted); font-size: 0.85rem; }
-    #qr-panel a { color: var(--accent); }
+    #zones-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; }
+    #side-panel { display: flex; flex-direction: column; gap: 1.5rem; }
+    #qr-block { display: flex; align-items: center; gap: 1rem; }
+    #qr-block img { width: 76px; height: 76px; border-radius: 4px; background: #fff; padding: 4px; border: 1px solid var(--hairline); flex-shrink: 0; }
+    #qr-block p { margin: 0; color: var(--muted); font-size: 0.82rem; }
+    #qr-block a { color: var(--accent); }
+    #links-list a { display: block; padding: 0.6rem 0; border-bottom: 1px solid var(--hairline); color: var(--ink); text-decoration: none; font-size: 0.88rem; }
+    #links-list a:last-child { border-bottom: none; }
+    #links-list a:hover { color: var(--accent); }
+    #links-list small { display: block; color: var(--muted); font-size: 0.74rem; margin-top: 0.15rem; }
+    @media (max-width: 720px) {
+      body { grid-template-columns: 1fr; }
+      #zones-grid { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body>
   <h1>Creative Computing <span id="status">connecting…</span></h1>
 
-  <div class="panel" style="grid-column: 1 / -1;">
-    <h2>Zones</h2>
-    <div id="zones-grid"></div>
+  <div id="zones-grid"></div>
+
+  <div id="side-panel">
+    <div class="panel" id="qr-block">
+      <img src="/qr.png" alt="Scan to build a palette from your phone">
+      <p>Scan to build a colour palette from your own photo, or open <a href="/contribute.html">contribute.html</a> directly.</p>
+    </div>
+
+    <div class="panel">
+      <h2>Links</h2>
+      <div id="links-list">
+        <a href="/admin.html">Admin<small>Live effect/palette controls, sensor toggles</small></a>
+        <a href="/contribute.html">Contribute a palette<small>Build a colour palette from a photo</small></a>
+        <a href="/cast.html">Cast<small>Full-screen sketch display for a projector</small></a>
+        <a href="/shadow.html">Shadow display<small>Thermal-camera shadow-cast projector view</small></a>
+        <a href="/backdrop.html">Set shadow backdrop<small>Upload the photo behind the shadow display</small></a>
+      </div>
+    </div>
   </div>
 
-  <div class="panel" id="qr-panel">
-    <img src="/qr.png" alt="Scan to build a palette from your phone">
-    <p>Scan to build a palette from your own photo — or open <a href="/contribute.html">contribute.html</a> directly.</p>
-  </div>
-
-  <div class="panel">
-    <h2>Pipeline</h2>
-    <div class="stage-label">
-      Sampled from the sketch canvas
-      <small>What the p5 sketch would send, if it were driving the LEDs (it currently isn't — each zone's actual output is shown on its own card above)</small>
-    </div>
-    <canvas id="sampled-frame-canvas" class="swatch-strip" width="60" height="1"></canvas>
-  </div>
-
-  <div class="panel">
-    <h2>Sensors</h2>
-    <div class="metric">
-      <span class="metric-label">Noise level</span>
-      <span class="metric-value" id="noise-value">—</span>
-    </div>
-    <div class="bar"><div class="bar-fill" id="noise-bar" style="width: 0%"></div></div>
-    <div class="metric" style="margin-top: 1rem;">
-      <span class="metric-label">Activity</span>
-      <span class="metric-value" id="activity-value">—</span>
-    </div>
-    <div class="bar"><div class="bar-fill" id="activity-bar" style="width: 0%"></div></div>
-  </div>
- 
-  <div class="panel">
-    <h2>Inferred State</h2>
-    <div class="metric">
-      <span class="metric-label">Mood</span>
-      <span class="metric-value" id="mood-value">—</span>
-    </div>
-    <div class="metric">
-      <span class="metric-label">Presence</span>
-      <span class="metric-value" id="presence-value">—</span>
-    </div>
-    <div class="metric">
-      <span class="metric-label">Audio scene</span>
-      <span class="metric-value" id="audio-scene-value">—</span>
-    </div>
-  </div>
- 
-  <div id="sketch-panel">
-    <div id="sketch-toolbar">
-      <h2>Sketch</h2>
-      <select id="sketch-select"></select>
-      <a href="/create.html">Upload your own →</a>
-    </div>
-    <div id="sketch-error"></div>
-    <div id="sketch-container"></div>
-  </div>
-
-  <div id="admin-link"><a href="/admin.html">Admin →</a></div>
-
-  <script src="/pixelMap.js"></script>
   <script src="/wsClient.js"></script>
   <script src="/zoneUtils.js"></script>
-  <script src="/sketchSandbox.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>
- 
-
