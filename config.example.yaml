@@ -37,7 +37,9 @@ leds:
   # A zone's source dict keys must match its chosen effect's step()
   # parameter names - organic_wave/organic_comet/organic_twinkle/
   # reactive_glow all take `intensity`; temp_humidity_bar takes
-  # `temperature`+`humidity`; tri_arm_glide takes `intensity`+`angle`;
+  # `temperature`+`humidity`+`condition`+`activated`+`history` (the last two
+  # gate its periodic past-24h replay; `history` is unrescaled - see its
+  # `raw: true` source below); tri_arm_glide takes `intensity`+`angle`;
   # audio_reactive_wave takes `loudness`+`motion`+`env_brightness`+`ripple`;
   # heart_rate_check_in takes `intensity`+`bpm`, same as pulse. See
   # src/output/effects/registry.py's own docstring for the full breakdown of
@@ -86,6 +88,9 @@ leds:
         humidity: {path: sensors.humidity, min: 20, max: 70}
         activity: state.activity_level   # drives a subtle shimmer - see TempHumidityBarEffect's docstring
         contrast: {path: sensors.indoor_outdoor_temp_diff, min: 0, max: 15}   # indoor/outdoor divergence - see main.py's sensor_loop
+        condition: {path: sensors.outdoor_condition_code, min: 0, max: 5}   # weather.py's _CONDITION_ORDER index (clear/cloudy/fog/rain/snow/storm) - must match TempHumidityBarEffect.CONDITION_ORDER
+        activated: sensors.activated   # presence (main.py's ActivationTracker) - gates the periodic past-24h replay
+        history: {path: sensors.outdoor_history, raw: true}   # past-24h hourly series, unrescaled - see main.py's _resolve_one_source raw passthrough and TempHumidityBarEffect's replay mode
       # RGBW bar fixture, 28 independently-addressable segments (confirmed
       # 2026-08-07) - 4 channels/segment x 28 = 112 DMX channels.
       # start_address 25 is a placeholder (the block right after ambient's

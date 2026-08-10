@@ -218,7 +218,7 @@ async def sensor_loop(sensors, infer, activation_tracker, hr_tracker, motion_tra
         await asyncio.sleep(0.05)  # 20 Hz
 
 
-def _resolve_one_source(latest: dict, spec) -> float:
+def _resolve_one_source(latest: dict, spec):
     """Walk a dot-path (e.g. "heart_rate.engaged") into server.latest and
     return a 0..1 value. `spec` is either the dot-path string directly, or
     a {"path", "min", "max"} dict - the latter linearly rescales a reading
@@ -227,8 +227,25 @@ def _resolve_one_source(latest: dict, spec) -> float:
     source sensor's first tick has landed); bool -> 1.0/0.0. Doesn't
     validate that an unscaled path "makes sense" as 0..1 (e.g. bpm isn't) -
     the zone config is trusted the same way config.py's _deep_merge trusts
-    config.yaml."""
+    config.yaml.
+
+    {"path", "raw": true} skips all of the above and returns the value at
+    that path completely unchanged (missing path -> None instead of 0.0,
+    since None unambiguously means "nothing there yet" for a shape no
+    numeric fallback could stand in for) - for a source that isn't a single
+    0..1 reading at all, e.g. temp_humidity's `history` (a whole list of
+    past readings for TempHumidityBarEffect's replay, not one value to
+    rescale). Every other zone's sources stay plain floats; this is an
+    escape hatch for the one effect that needs structured data, not a
+    general mechanism most zones should reach for."""
     if isinstance(spec, dict):
+        if spec.get("raw"):
+            value = latest
+            for part in spec["path"].split("."):
+                if not isinstance(value, dict) or part not in value:
+                    return None
+                value = value[part]
+            return value
         path, lo, hi = spec["path"], spec.get("min"), spec.get("max")
     else:
         path, lo, hi = spec, None, None
@@ -252,8 +269,10 @@ def _resolve_one_source(latest: dict, spec) -> float:
 
 def _resolve_sources(latest: dict, source_map: dict) -> dict:
     """{name: 0..1 value, ...} for every named source a zone declares -
-    see _resolve_one_source. Keys must match the zone's chosen effect's
-    step() parameter names (led_loop calls effect.step(**sources))."""
+    see _resolve_one_source (a `raw: true` source is the one exception,
+    passed through unrescaled - still keyed the same way). Keys must match
+    the zone's chosen effect's step() parameter names (led_loop calls
+    effect.step(**sources))."""
     return {name: _resolve_one_source(latest, spec) for name, spec in source_map.items()}
 
 

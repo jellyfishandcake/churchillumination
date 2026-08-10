@@ -81,6 +81,13 @@ DEFAULTS = {
                 "source": {
                     "temperature": {"path": "sensors.temperature", "min": 15, "max": 30},
                     "humidity": {"path": "sensors.humidity", "min": 20, "max": 70},
+                    # condition/activated/history drive the periodic past-24h
+                    # replay - see TempHumidityBarEffect's docstring. history
+                    # is unrescaled (a list, not a single reading) via the
+                    # raw:true passthrough in _resolve_one_source.
+                    "condition": {"path": "sensors.outdoor_condition_code", "min": 0, "max": 5},
+                    "activated": "sensors.activated",
+                    "history": {"path": "sensors.outdoor_history", "raw": True},
                 },
                 "output": {"type": "dmx", "start_address": 25, "channels": ["r", "g", "b", "w"], "pixels": 28},
             },

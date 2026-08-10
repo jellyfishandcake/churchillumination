@@ -646,54 +646,162 @@ class HeartRateEffect:
 
 
 class TempHumidityBarEffect:
-    """`temperature` picks a position along the palette gradient (cool end
-    <-> warm end), `humidity` scales overall brightness - one combined base
-    colour across the zone (was originally imagined as a spatial LED matrix
-    panel - hence the class's old name - but the physical build settled on
-    a DMX bar fixture instead; a DMX zone's "pixels" are independently
-    addressable fixture segments, not screen-like rows/cols, and this
-    effect never actually did 2D addressing, so the rename is a pure
-    naming fix, not a behaviour change). On top of that base colour:
+    """Two display modes for the weather zone's DMX bar, switched between by
+    an internal timer - live current-weather most of the time, with a
+    periodic animated reveal of the past 24h while someone's present.
 
+    LIVE MODE (default, and whenever `history` isn't available yet):
+    `temperature` picks a position along the palette gradient (cool end <->
+    warm end), `humidity` scales overall brightness - same base colour
+    across every segment (was originally imagined as a spatial LED matrix
+    panel - hence the class's old name - but the physical build settled on
+    a DMX bar fixture instead; this effect never did real 2D addressing, so
+    that rename was a pure naming fix). On top of that base colour:
+
+    - `condition` (weather.py's _CONDITION_ORDER index, rescaled to 0..1 by
+      main.py's {path, min: 0, max: 5} source - see CONDITION_ORDER below,
+      which must stay in the same order) adds a per-condition texture on
+      top of the base colour via _condition_texture: clear is a flat calm
+      glow (a no-op multiplier, identical to this effect before condition
+      existed), cloudy/fog dim the whole bar down, rain/storm add a fast
+      noise-driven flicker (storm faster/stronger than rain), snow a
+      slower, softer one. Texture only ever brightens above the base
+      (clipped noise, `1.0 + ...`) so it reads as sparkle/flicker layered
+      on the weather colour, never darkens it unpredictably.
     - `activity` (state.activity_level - same signal the ambient zone
       reacts to, so this zone's liveliness stays in sync with it rather
-      than reading as a separate, disconnected zone) drives a subtle
-      per-segment shimmer: a calm room leaves the bar essentially flat and
-      static like before, a lively one gets a slow, visible noise-driven
-      variation across segments.
-    - `contrast` (how far indoor temperature has drifted from outdoor -
-      see main.py's indoor_outdoor_temp_diff) pushes the displayed colour
+      than reading as a separate, disconnected zone) drives its own subtle
+      per-segment shimmer, independent of condition - a calm room stays
+      essentially flat regardless of weather, a lively one gets visible
+      noise-driven variation across segments.
+    - `contrast` (how far indoor temperature has drifted from outdoor - see
+      main.py's indoor_outdoor_temp_diff) pushes the displayed colour
       further toward whichever end of the palette it's already closest to
       - "the room vs the world" reads as a more saturated/extreme colour
-      the more indoor conditions diverge from outside, rather than
-      needing a separate signed "which direction" input (the resolve
-      pipeline only ever gives unsigned 0..1 - see main.py's
-      _resolve_one_source). At contrast=0 (or no weather data at all) this
-      is a no-op - identical to the colour before this existed."""
+      the more indoor conditions diverge from outside. At contrast=0 (or no
+      weather data at all) this is a no-op - identical to the colour before
+      this existed.
 
-    def __init__(self, n_pixels, palette):
+    REPLAY MODE: every REPLAY_INTERVAL_SECONDS of live mode while `activated`
+    (state.activated via main.py's ActivationTracker - someone's actually
+    present, not just ambient idle) is true, the bar switches to a
+    REPLAY_DURATION_SECONDS animated reveal of `history` (weather.py's past-
+    24h hourly series, passed through unrescaled via a {path, raw: true}
+    source - see main.py's _resolve_one_source). This is a genuinely spatial
+    use of the bar's segments, unlike live mode's one blended colour: history
+    is resampled across all n segments (oldest at index 0, most recent at
+    n-1) and revealed left-to-right as a growing count of lit segments, each
+    holding its own historical temperature/humidity/condition rather than
+    one shared colour - reads as a small temperature graph animating in,
+    like a plotter drawing the last 24 hours. The just-revealed segment gets
+    a brief brightness boost so the sweep still reads as progressing even
+    though segment-by-segment reveal steps are coarse (n=28 over 60s is
+    ~2s/segment - visibly stepped, not smooth, and that's fine here; this
+    is meant to read as discrete hourly samples, not a continuous wave).
+    Ends by resetting the live-mode timer, so the next replay is
+    REPLAY_INTERVAL_SECONDS after this one *finishes*, not from when it
+    started. If `history` is empty/None (weather sensor disabled, or no
+    fetch has landed yet) replay never triggers - the fail-soft path is
+    just "stay in live mode forever", not a crash or a blank bar.
+
+    TICK_SECONDS assumes the same fixed 20Hz cadence every effect in this
+    file is driven at (main.py's output_loop) - effects don't receive an
+    actual dt, so both timers above increment by this fixed constant per
+    step() call rather than by a measured elapsed time."""
+
+    TICK_SECONDS = 0.05
+    TEMPERATURE_RANGE = (15.0, 30.0)  # must match config's temp_humidity zone temperature {min, max} - history entries arrive in raw °C, live `temperature` arrives already rescaled by main.py, so history needs the same rescale done here
+    HUMIDITY_RANGE = (20.0, 70.0)     # must match config's temp_humidity zone humidity {min, max}
+    CONDITION_ORDER = ("clear", "cloudy", "fog", "rain", "snow", "storm")  # must match weather.py's _CONDITION_ORDER - index is what `condition` and each history entry's condition_code encode
+    CONDITION_FLAT_BRIGHTNESS = (1.0, 0.75, 0.65, 0.85, 0.95, 0.8)  # per-CONDITION_ORDER-index flat multiplier used by replay's revealed segments (no animated texture there - see docstring)
+    REPLAY_INTERVAL_SECONDS = 180.0  # time spent in live mode between replays while activated - 3 minutes
+    REPLAY_DURATION_SECONDS = 60.0   # how long one full past-24h reveal takes
+
+    def __init__(self, n_pixels, palette, background_level=0.05):
         self.n = n_pixels
         self.lut = _palette_lut(palette)
         self.t = 0.0
+        self.background = self.lut[0] * background_level
+        self._since_replay = 0.0  # seconds of live mode since the last replay ended (or since startup)
+        self._replaying = False
+        self._replay_elapsed = 0.0
 
-    def step(self, temperature: float = 0.5, humidity: float = 0.5, activity: float = 0.0, contrast: float = 0.0):
-        activity = min(max(activity, 0.0), 1.0)
-        contrast = min(max(contrast, 0.0), 1.0)
+    def _condition_index(self, condition: float) -> int:
+        idx = int(round(min(max(condition, 0.0), 1.0) * (len(self.CONDITION_ORDER) - 1)))
+        return min(max(idx, 0), len(self.CONDITION_ORDER) - 1)
 
+    def _condition_texture(self, condition_idx: int) -> np.ndarray:
+        """Brightness multiplier per segment, >= 1.0 always (see docstring
+        on why texture only ever brightens, never darkens unpredictably)."""
+        x = np.arange(self.n)
+        name = self.CONDITION_ORDER[condition_idx]
+        if name in ("rain", "storm"):
+            speed, amp = (8.0, 0.5) if name == "storm" else (4.0, 0.3)
+            noise = value_noise(x * 0.6, np.full(self.n, self.t * speed), seed=3)
+            return 1.0 + np.clip(noise, 0, None) * amp
+        if name == "snow":
+            noise = value_noise(x * 0.3, np.full(self.n, self.t * 0.5), seed=4)
+            return 1.0 + np.clip(noise, 0, None) * 0.25
+        if name in ("cloudy", "fog"):
+            return np.full(self.n, 0.7)
+        return np.ones(self.n)  # clear
+
+    def _live_frame(self, temperature: float, humidity: float, activity: float, contrast: float, condition_idx: int):
         t = min(max(temperature, 0.0), 1.0)
         exaggerated_t = min(max(t + (t - 0.5) * contrast, 0.0), 1.0)
-        index = int(exaggerated_t * (len(self.lut) - 1))
-        color = self.lut[index].astype(float)
+        color = self.lut[int(exaggerated_t * (len(self.lut) - 1))].astype(float)
         brightness = 0.3 + 0.7 * min(max(humidity, 0.0), 1.0)
 
         x = np.arange(self.n)
-        shimmer = value_noise(x * 0.15, np.full(self.n, self.t))  # roughly -1..1 per pixel
-        shimmer_amount = 0.25 * activity  # calm: ~0, panel reads flat; lively: visible variation
-        pixel_brightness = brightness * (1.0 + shimmer * shimmer_amount)
+        shimmer = value_noise(x * 0.15, np.full(self.n, self.t))  # roughly -1..1 per segment
+        shimmer_amount = 0.25 * activity  # calm: ~0, bar reads flat; lively: visible variation
+        texture = self._condition_texture(condition_idx)
 
+        pixel_brightness = brightness * texture * (1.0 + shimmer * shimmer_amount)
         frame = color[None, :] * pixel_brightness[:, None]
-        self.t += 0.01 + 0.04 * activity  # calm: near-static; lively: visibly drifting
         return np.clip(frame, 0, 255).astype(np.uint8)
+
+    def _replay_frame(self, history: list):
+        n_hist = len(history)
+        progress = min(1.0, self._replay_elapsed / self.REPLAY_DURATION_SECONDS)
+        reveal_count = int(progress * self.n)
+
+        frame = np.tile(self.background, (self.n, 1)).astype(float)
+        t_lo, t_hi = self.TEMPERATURE_RANGE
+        h_lo, h_hi = self.HUMIDITY_RANGE
+        for i in range(reveal_count):
+            entry = history[min(n_hist - 1, int(i / self.n * n_hist))]
+            t_norm = min(max((entry.get("temperature", t_lo) - t_lo) / (t_hi - t_lo), 0.0), 1.0)
+            h_norm = min(max((entry.get("humidity", h_lo) - h_lo) / (h_hi - h_lo), 0.0), 1.0)
+            color = self.lut[int(t_norm * (len(self.lut) - 1))].astype(float)
+            brightness = (0.3 + 0.7 * h_norm) * self.CONDITION_FLAT_BRIGHTNESS[entry.get("condition_code", 0)]
+            if i == reveal_count - 1:
+                brightness = min(1.4, brightness * 1.4)  # brief boost on the leading edge so the sweep reads as actively progressing
+            frame[i] = color * brightness
+
+        return np.clip(frame, 0, 255).astype(np.uint8)
+
+    def step(self, temperature: float = 0.5, humidity: float = 0.5, activity: float = 0.0, contrast: float = 0.0,
+              condition: float = 0.0, activated: float = 0.0, history: list = None):
+        activity = min(max(activity, 0.0), 1.0)
+        contrast = min(max(contrast, 0.0), 1.0)
+        self.t += 0.01 + 0.04 * activity  # calm: near-static; lively: visibly drifting - also paces replay's condition-independent noise calls
+
+        if self._replaying:
+            self._replay_elapsed += self.TICK_SECONDS
+            if self._replay_elapsed >= self.REPLAY_DURATION_SECONDS:
+                self._replaying = False
+                self._replay_elapsed = 0.0
+                self._since_replay = 0.0  # next replay is REPLAY_INTERVAL_SECONDS after this one finishes, not from when it started
+        else:
+            self._since_replay += self.TICK_SECONDS
+            if activated > 0.5 and history and self._since_replay >= self.REPLAY_INTERVAL_SECONDS:
+                self._replaying = True
+                self._replay_elapsed = 0.0
+
+        if self._replaying:
+            return self._replay_frame(history)
+        return self._live_frame(temperature, humidity, activity, contrast, self._condition_index(condition))
 
 
 if __name__ == "__main__":

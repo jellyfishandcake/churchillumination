@@ -12,8 +12,12 @@ one effect class from the same registry below - just its own palette and
 its own named source(s) (see main.py's led_loop/_resolve_sources). Most
 effects take a single `intensity` kwarg (organic_wave/organic_comet/
 organic_twinkle/reactive_glow); temp_humidity_bar takes
-`temperature`+`humidity`, plus an optional `activity` for its shimmer (see
-its own docstring); pulse takes `intensity`+`bpm` (bpm times its per-beat
+`temperature`+`humidity`, plus optional `activity` (shimmer) and `contrast`
+(indoor/outdoor divergence), and now also `condition` (weather_code bucket)
+and `activated`+`history` for its periodic past-24h replay (see its own
+docstring - `history` is the one source in this whole registry that isn't a
+plain 0..1 float, since it needs main.py's `{path, raw: true}` passthrough
+instead of the usual rescale); pulse takes `intensity`+`bpm` (bpm times its per-beat
 flash to the wearer's actual heart rate - see PulseEffect's docstring);
 tri_arm_glide takes `intensity`+`angle` (a swing angle rescaled to 0..1 -
 see TriArmGlideEffect's own docstring); audio_reactive_wave takes
