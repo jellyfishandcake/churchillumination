@@ -92,25 +92,29 @@ void ensureWifiConnected() {
   // of just de-associating - a fuller reset - and the delay below gives
   // that teardown time to actually finish (it's async under the hood)
   // before the next begin() call can race it again.
-  WiFi.disconnect(true);
-  delay(200);
-  WiFi.mode(WIFI_STA);
+  
+  // Escalating recovery: plain begin() first; the full radio-off teardown
+  // (the arduino-esp32#7095 workaround) only after repeated failures, so a
+  // routine reconnect doesn't pay for a power-cycle it doesn't need.
+  static uint8_t fail_count = 0;
+  if (fail_count >= 2) {
+    Serial.print(" [hard reset]");
+    WiFi.disconnect(true);
+    delay(200);
+    WiFi.mode(WIFI_STA);
+    fail_count = 0;
+  }
+
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  // waitForConnectResult() blocks until THIS attempt fully resolves (success
-  // or failure) before returning, instead of a manual delay()-loop that can
-  // give up and let the next loop() call WiFi.begin() again while the
-  // previous attempt is still resolving in the background.
   auto result = WiFi.waitForConnectResult(15000);
   if (result == WL_CONNECTED) {
-    // Confirms DHCP actually handed out a real address on the hotspot's
-    // 10.42.0.0/24 subnet - "WiFi connected" alone doesn't guarantee that;
-    // an unexpected 169.254.x.x here would mean association succeeded but
-    // DHCP itself failed, which explains an otherwise-mysterious inability
-    // to reach MQTT_BROKER_HOST afterwards.
+    fail_count = 0;
     Serial.print(" connected, IP=");
     Serial.println(WiFi.localIP());
     return;
   }
+  fail_count++;                  
+
   // WiFi.status() codes: 1=WL_NO_SSID_AVAIL (SSID not seen - wrong name,
   // wrong band, or out of range), 4=WL_CONNECT_FAILED (usually a wrong
   // password), 6=WL_DISCONNECTED. Printing the raw code rather than
@@ -253,6 +257,13 @@ void setup() {
 
   setupMic();
   setupThermalCamera();
+  // Initialise the WiFi stack before ensureWifiConnected() ever touches it -
+  // the first disconnect(true) in loop() otherwise runs against an
+  // uninitialised driver.
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);       // mains-powered node; modem sleep only adds MQTT latency
+  WiFi.setAutoReconnect(true);
+
   mqtt_client.setServer(MQTT_BROKER_HOST, MQTT_BROKER_PORT);
 }
 

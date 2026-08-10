@@ -12,7 +12,14 @@ server:
   port: 8000
 
 leds:
-  num_pixels: 153   # total APA102 pixels - only counts zones below with output.type "led": heart_rate 60 (1m strip) + accelerometer 93 (4 arms, 36+19+22+16 - see TriArmGlideEffect.ARM_LENGTHS). temp_humidity is a DMX bar now, not counted here. match this to your physical strip length
+  # Virtual/dashboard-only total across every output.type "led" zone - feeds
+  # the browser's pixel map + sketch-canvas sampling. Doesn't map to one
+  # physical chain anymore - see "strips" below for the real per-chain
+  # hardware config. Keep this equal to the sum of every led zone's
+  # output.pixels: heart_rate 60 (1m strip) + accelerometer 94 (4 arms,
+  # 36+20+16+22 - see TriArmGlideEffect.ARM_LENGTHS). temp_humidity is a DMX
+  # bar, not counted here.
+  num_pixels: 154
   layout: strip   # strip|grid|ring — only "strip" is implemented so far (see web/pixelMap.js)
   # Final output multiplier applied after gamma correction, right before
   # pixels go to hardware - the APA102 driver's own brightness byte is
@@ -24,6 +31,16 @@ leds:
   # affects `led` zones - a `dmx` zone's own dimmer channel (if its mode has
   # one) is the equivalent knob there.
   brightness: 1.4
+  # Real APA102 hardware chains - heart_rate and accelerometer are two
+  # independent chains (NOT data-connected to each other - separate
+  # data+clock pin pairs, not one continuous strip spliced together), each
+  # its own LEDStrip/SPI bus (see main.py's main()). Each led zone below
+  # picks one via output.strip. accelerometer_strip is on SPI1 (GPIO 20/21,
+  # confirmed 2026-08-10) - needs `dtoverlay=spi1-3cs` added to
+  # /boot/firmware/config.txt + a reboot before /dev/spidev1.0 exists.
+  strips:
+    heart_rate_strip: {num_pixels: 60, spi_bus: 0, spi_device: 0}
+    accelerometer_strip: {num_pixels: 94, spi_bus: 1, spi_device: 0}
   # Named sections of the installation. Each runs its own effect+palette
   # (see src/output/effects/), driven by one or more named sensor signals.
   # A source value is either a dot-path resolved against server.latest each
@@ -46,17 +63,20 @@ leds:
   # which effect suits which zone shape.
   #
   # `output` says which hardware the zone actually drives:
-  #   {type: led, pixels: N}  - a slice of the APA102 strip (modular/
-  #     reorderable panels - detachable clips - but one continuous
-  #     electrical chain, so reordering panels physically just means
-  #     reordering the `led` zones in this list). Changeable at runtime
-  #     from admin.html's Zones tab (public dashboard is read-only - see
-  #     web/index.html). `pixels` across all `led` zones should sum to
-  #     num_pixels above; output_loop pads/clamps the last led zone if they
-  #     don't, rather than crashing.
+  #   {type: led, strip: name, pixels: N}  - a slice of one of the
+  #     independent APA102 chains in "strips" above (`strip` must be a key
+  #     there - modular/reorderable panels - detachable clips - but one
+  #     continuous electrical chain per strip, so reordering panels
+  #     physically just means reordering the `led` zones sharing that strip
+  #     in this list; zones on *different* strips are never electrically
+  #     connected at all). Changeable at runtime from admin.html's Zones tab
+  #     (public dashboard is read-only - see web/index.html). `pixels`
+  #     across all `led` zones sharing one strip should sum to that strip's
+  #     own num_pixels; output_loop pads/clamps the last zone on that strip
+  #     if they don't, rather than crashing.
   #   {type: dmx, start_address: N, channels: [...], pixels: N} - a DMX512
   #     fixture (e.g. an RGB/RGBW wall-washer bar) over a USB-DMX interface,
-  #     driven in parallel with the strip - see src/output/dmx.py and
+  #     driven in parallel with the strips - see src/output/dmx.py and
   #     main.py's output_loop. Needs dmx.enabled below set true. Not yet
   #     live-swappable from admin.html - edit config.yaml + restart to
   #     change a dmx zone's effect/palette. channels lists the role of each
@@ -103,20 +123,21 @@ leds:
       source:
         intensity: heart_rate.engaged        # bool -> 1.0/0.0, rising edge starts a new reading session
         bpm: {path: heart_rate.bpm, min: 40, max: 180}   # must match HeartRateEffect.BPM_RANGE
-      output: {type: led, pixels: 60}   # 1m strip, confirmed 2026-08-07
+      output: {type: led, strip: heart_rate_strip, pixels: 60}   # 1m strip, confirmed 2026-08-07
     - name: accelerometer
       effect: tri_arm_glide   # swing glides from hub to tip on whichever arm(s) the angle points toward - see TriArmGlideEffect's docstring
       palette: autumn
       source:
         intensity: sensors.acceleration                              # raw shake magnitude, 0..1
         angle: {path: sensors.angle_deg, min: 0, max: 360}            # swing angle -> 0..1
-      # Continuous-strip zone, spliced onto the same chain as heart_rate.
-      # 93 = 36+19+22+16, confirmed 2026-08-07: 4 arms radiating from a
-      # shared hub (design changed from the original 3-arm idea), unequal
-      # lengths - see TriArmGlideEffect.ARM_LENGTHS. ARM_ANGLES_DEG/
-      # ARM_REVERSED there are still placeholders pending on-site
-      # angle/wiring-direction measurement.
-      output: {type: led, pixels: 93}
+      # On its own independent chain (accelerometer_strip, SPI1) - NOT
+      # data-connected to heart_rate. 94 = 36+20+16+22, confirmed
+      # 2026-08-10 post-soldering: 4 arms radiating from a shared hub
+      # (design changed from the original 3-arm idea), unequal lengths,
+      # angles 20/45/90/135 (approximate, arm 3 straight up), arms 2+4
+      # wired tip-to-hub - see TriArmGlideEffect.ARM_LENGTHS/
+      # ARM_ANGLES_DEG/ARM_REVERSED.
+      output: {type: led, strip: accelerometer_strip, pixels: 94}
 
 # Interface-level DMX512 settings - which zones actually send to it, and
 # each fixture's start_address/channels, are configured per-zone above

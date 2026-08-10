@@ -276,23 +276,39 @@ def _resolve_sources(latest: dict, source_map: dict) -> dict:
     return {name: _resolve_one_source(latest, spec) for name, spec in source_map.items()}
 
 
-def _led_zone_pixel_ranges(zones_config: list, num_pixels: int) -> dict:
-    """{zone_name: (start, end), ...} for zones whose output.type is "led" -
-    a "dmx" zone has no position on the strip, so it's skipped here (and
-    doesn't consume any of num_pixels). In config order. If the configured
-    led-zone pixel counts don't sum to num_pixels, pad/clamp the last led
-    zone so the strip is always exactly filled - a config typo shouldn't
-    crash the installation."""
+def _led_zone_pixel_ranges(zones_config: list, strips: dict) -> dict:
+    """{zone_name: (strip_name, start, end), ...} for zones whose output.type
+    is "led" - a "dmx" zone has no position on any strip, so it's skipped
+    here. heart_rate and accelerometer are on two independent APA102 chains
+    now (separate data+clock pin pairs, not one continuous strip spliced
+    together - see leds.strips in config.py/config.yaml), so ranges are
+    computed per strip, not globally: each strip fills its own zones in
+    config order, and if that strip's zones' pixel counts don't sum to its
+    own num_pixels, the last zone on THAT strip is padded/clamped so the
+    strip is always exactly filled - a config typo shouldn't crash the
+    installation. A zone whose output.strip isn't a real entry in `strips`
+    is dropped (warned once) rather than crashing on a bad lookup - same
+    "config typo shouldn't crash" reasoning."""
     led_zones = [zone for zone in zones_config if zone["output"]["type"] == "led"]
+    zones_by_strip = {}
+    for zone in led_zones:
+        strip_name = zone["output"]["strip"]
+        if strip_name not in strips:
+            print(f"[output_loop] zone {zone['name']!r} references unknown strip {strip_name!r} - dropped, check leds.strips/leds.zones agree in config.yaml")
+            continue
+        zones_by_strip.setdefault(strip_name, []).append(zone)
+
     ranges = {}
-    start = 0
-    for i, zone in enumerate(led_zones):
-        is_last = i == len(led_zones) - 1
-        end = num_pixels if is_last else min(num_pixels, start + zone["output"]["pixels"])
-        ranges[zone["name"]] = (start, end)
-        start = end
-    if start != num_pixels:
-        print(f"[output_loop] led-zone pixel counts sum to {start}, not num_pixels={num_pixels} — last led zone padded/clamped to fit")
+    for strip_name, zones in zones_by_strip.items():
+        num_pixels = strips[strip_name].num_pixels
+        start = 0
+        for i, zone in enumerate(zones):
+            is_last = i == len(zones) - 1
+            end = num_pixels if is_last else min(num_pixels, start + zone["output"]["pixels"])
+            ranges[zone["name"]] = (strip_name, start, end)
+            start = end
+        if start != num_pixels:
+            print(f"[output_loop] strip {strip_name!r}: led-zone pixel counts sum to {start}, not num_pixels={num_pixels} — last zone on this strip padded/clamped to fit")
     return ranges
 
 
@@ -337,20 +353,24 @@ def _dmx_zone_pixel_count(output: dict) -> int:
     return output.get("pixels", 1)
 
 
-async def output_loop(leds, dmx, num_pixels, zones_config, brightness: float = 1.0):
+async def output_loop(strips, dmx, zones_config, brightness: float = 1.0):
     """Step every zone's selected effect once, then route each zone's frame
     to whichever hardware its own `output` config points at - an `led` zone
-    (output: {type: led, pixels: N}) contributes a slice of the APA102
-    strip; a `dmx` zone (output: {type: dmx, start_address, channels,
-    pixels: N}) is mapped into the shared 512-channel DMX universe instead,
-    as N consecutive groups of `channels` starting at start_address (N
-    defaults to 1 - one whole-bar point of colour - for fixtures/modes with
-    no independent segments; set pixels to match a confirmed segment count
-    for one that has them, see _dmx_zone_pixel_count). Replaces the old
-    led_loop/dmx_loop split now that a zone's hardware target is just a
-    config field on the same zone, not a reason to duplicate the whole
-    effect-stepping loop - see CLAUDE.md/the conversation that led to this
-    for why they used to be separate. 20 Hz.
+    (output: {type: led, strip: name, pixels: N}) contributes a slice of one
+    of the independent APA102 chains in `strips` ({strip_name: LEDStrip} -
+    heart_rate and accelerometer are NOT data-connected to each other, two
+    separate chains, not one continuous strip spliced together - see
+    leds.strips in config.py/config.yaml); a `dmx` zone (output: {type: dmx,
+    start_address, channels, pixels: N}) is mapped into the shared
+    512-channel DMX universe instead, as N consecutive groups of `channels`
+    starting at start_address (N defaults to 1 - one whole-bar point of
+    colour - for fixtures/modes with no independent segments; set pixels to
+    match a confirmed segment count for one that has them, see
+    _dmx_zone_pixel_count). Replaces the old led_loop/dmx_loop split now
+    that a zone's hardware target is just a config field on the same zone,
+    not a reason to duplicate the whole effect-stepping loop - see
+    CLAUDE.md/the conversation that led to this for why they used to be
+    separate. 20 Hz.
 
     Every zone still runs its own effect+palette
     (server.runtime_settings["zones"][name], live-swappable from admin.html's
@@ -366,12 +386,21 @@ async def output_loop(leds, dmx, num_pixels, zones_config, brightness: float = 1
     rebuilding every tick would e.g. stop a comet's trail from ever
     accumulating.
 
+    server.latest["led_frame"] stays ONE flat array concatenating every led
+    zone's frame in zones_config order, exactly like when there was only one
+    physical strip - the browser's dashboard (admin.js/app.js) slices it by
+    running zone.pixels offset and has no notion of "strip" at all, so
+    keeping this shape means zero client-side changes were needed for the
+    multi-strip split. The real per-strip hardware writes below are a
+    separate concern, built by re-slicing the same graded pixel data back
+    apart by zone into each strip's own buffer.
+
     The browser's canvas-sampling pipeline (app.js/sketch.js/pixelMap.js,
     still sending {"pixels": [...]}) keeps running but is intentionally
     unconsumed here — kept for its own visual/demo value and as groundwork
     for a future user-sketch-upload feature, not because it's a bug.
     """
-    led_ranges = _led_zone_pixel_ranges(zones_config, num_pixels)
+    led_ranges = _led_zone_pixel_ranges(zones_config, strips)
 
     # Per-zone: (current_effect_name, current_palette_name, effect_instance,
     # last_frame, broken). `broken` is set when an effect's step() params
@@ -384,7 +413,10 @@ async def output_loop(leds, dmx, num_pixels, zones_config, brightness: float = 1
     zone_state = {}
     for zone in zones_config:
         output = zone["output"]
-        n = (led_ranges[zone["name"]][1] - led_ranges[zone["name"]][0]) if output["type"] == "led" else _dmx_zone_pixel_count(output)
+        if output["type"] == "led":
+            n = (led_ranges[zone["name"]][2] - led_ranges[zone["name"]][1]) if zone["name"] in led_ranges else 0
+        else:
+            n = _dmx_zone_pixel_count(output)
         zone_state[zone["name"]] = (None, None, None, np.zeros((n, 3), dtype=np.uint8), False)
 
     while True:
@@ -395,7 +427,10 @@ async def output_loop(leds, dmx, num_pixels, zones_config, brightness: float = 1
         for zone in zones_config:
             name = zone["name"]
             output = zone["output"]
-            n = (led_ranges[name][1] - led_ranges[name][0]) if output["type"] == "led" else _dmx_zone_pixel_count(output)
+            if output["type"] == "led":
+                n = (led_ranges[name][2] - led_ranges[name][1]) if name in led_ranges else 0
+            else:
+                n = _dmx_zone_pixel_count(output)
 
             settings = server.runtime_settings["zones"].get(name, {})
             effect_name = settings.get("effect") or zone["effect"]
@@ -456,7 +491,8 @@ async def output_loop(leds, dmx, num_pixels, zones_config, brightness: float = 1
                             if 0 <= start + i < len(dmx_universe):
                                 dmx_universe[start + i] = value
 
-        ordered_led_frames = [led_frames[name] for name in led_ranges]
+        ordered_led_zone_names = list(led_ranges.keys())  # config order, same order dashboard swatches assume
+        ordered_led_frames = [led_frames[name] for name in ordered_led_zone_names]
         full_frame = np.concatenate(ordered_led_frames, axis=0) if ordered_led_frames else np.zeros((0, 3))
         graded = apply_gamma(full_frame)
         if brightness != 1.0:
@@ -465,9 +501,23 @@ async def output_loop(leds, dmx, num_pixels, zones_config, brightness: float = 1
             # Clips rather than rescales so a boosted highlight can flatten
             # to solid white instead of the whole frame dimming to compensate.
             graded = np.clip(graded.astype(np.float32) * brightness, 0, 255).astype(np.uint8)
-        led_frame = graded.tolist()  # numpy -> plain ints, for JSON
+        led_frame = graded.tolist()  # numpy -> plain ints, for JSON - dashboard-facing, one flat array same as before the multi-strip split
 
-        leds.render_pixels(led_frame)
+        # Re-slice that same graded data back apart by zone into each real
+        # physical strip's own buffer (strip-local offsets, from led_ranges),
+        # then send each strip independently - this is the one place the
+        # two-chain hardware split actually shows up; the dashboard-facing
+        # led_frame above stays a single flat array regardless.
+        strip_buffers = {name: [[0, 0, 0]] * strip.num_pixels for name, strip in strips.items()}
+        offset = 0
+        for name in ordered_led_zone_names:
+            strip_name, local_start, local_end = led_ranges[name]
+            length = local_end - local_start
+            strip_buffers[strip_name][local_start:local_end] = led_frame[offset:offset + length]
+            offset += length
+        for strip_name, strip in strips.items():
+            strip.render_pixels(strip_buffers[strip_name])
+
         server.latest["led_frame"] = led_frame
         # {zone_name: [[r,g,b], ...]} - separate from led_frame (which is one
         # flat concatenated strip) since dmx zones don't share that strip's
@@ -524,7 +574,14 @@ async def palette_build_loop():
 async def main():
     config = load_config()
     sensors = build_sensors(config)
-    leds = LEDStrip(num_pixels=config["leds"]["num_pixels"])
+    # heart_rate and accelerometer are two independent APA102 chains (not
+    # data-connected to each other) - one LEDStrip per entry in leds.strips,
+    # each opening its own SPI bus/device. See _led_zone_pixel_ranges/
+    # output_loop for how each led zone's frame is routed to the right one.
+    strips = {
+        name: LEDStrip(num_pixels=cfg["num_pixels"], spi_bus=cfg.get("spi_bus", 0), spi_device=cfg.get("spi_device", 0))
+        for name, cfg in config["leds"]["strips"].items()
+    }
     # Only constructed if a DMX fixture is actually enabled - see
     # config.yaml's dmx block. Not attempted to open the serial port at all
     # otherwise, so this stays silent on setups that don't have the USB-DMX
@@ -599,7 +656,7 @@ async def main():
 
     tasks = [
         sensor_loop(sensors, infer, activation_tracker, hr_tracker, motion_tracker, audio_moment_tracker),
-        output_loop(leds, dmx, config["leds"]["num_pixels"], config["leds"]["zones"], config["leds"]["brightness"]),
+        output_loop(strips, dmx, config["leds"]["zones"], config["leds"]["brightness"]),
         palette_build_loop(),
         server.start_server(host=config["server"]["host"], port=config["server"]["port"]),
     ]
@@ -611,10 +668,12 @@ async def main():
     finally:
         # Ctrl+C cancels this coroutine at whatever await it's sitting on -
         # that raises right here, past the gather, so this always runs
-        # before the process actually exits. Without it the strip just
-        # holds whatever colour it last received (APA102 chips have no
-        # "power off" tied to the SPI line going quiet).
-        leds.render_pixels([[0, 0, 0]] * config["leds"]["num_pixels"])
+        # before the process actually exits. Without it a strip just holds
+        # whatever colour it last received (APA102 chips have no "power
+        # off" tied to the SPI line going quiet) - every chain gets blanked,
+        # not just one.
+        for strip in strips.values():
+            strip.render_pixels([[0, 0, 0]] * strip.num_pixels)
         if dmx is not None:
             dmx.blackout()
  

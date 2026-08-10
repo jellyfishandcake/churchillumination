@@ -372,10 +372,18 @@ class TriArmGlideEffect:
     arms placed closer together than that can overlap into 3+ simultaneously
     weighted arms, or (if two arms end up more than 180 degrees apart from
     every other arm) leave a dead gap where no arm has positive weight for a
-    stretch of angles - acceptable for now since the exact angles are still
-    unmeasured, but worth another look once ARM_ANGLES_DEG below is real:
-    if the physical layout clusters arms tightly, a narrower falloff than a
-    plain cosine may read better than this effect currently gives.
+    stretch of angles. With the confirmed angles (20/45/90/135, all bunched
+    into a 115-degree span) this isn't hypothetical - checked numerically:
+    3+ arms carry positive weight simultaneously across most of the 0-135
+    degree arc (unsurprising, given how close together 20/45/90/135 are),
+    and there's a genuine ~65-degree dead zone from about 226 to 290 degrees
+    (roughly opposite the arm cluster) where every arm's weight is exactly
+    0 - swinging the stick into that range currently lights nothing. Test on
+    real hardware once flashed; if the dead zone or overlap reads badly, a
+    narrower falloff than a plain cosine (e.g. raising the cos term to a
+    power before clamping) is the fix, not a change to the angles
+    themselves - the dead zone in particular may be fine as-is if that
+    swing direction isn't ergonomically reachable anyway.
 
     "Glide out": while a swing keeps an arm's weight * intensity above
     IDLE_THRESHOLD, that arm's head advances from the hub (distance 0)
@@ -387,32 +395,32 @@ class TriArmGlideEffect:
     the last one left off.
 
     ARM_LENGTHS gives each arm's pixel count explicitly (confirmed
-    2026-08-07: 36/19/22/16, physically unequal, so the old "split n_pixels
-    evenly across ARM_COUNT" approach no longer applies) - arm order here is
-    just index order, not yet tied to a physical arm identity. If the actual
-    zone's n_pixels doesn't match sum(ARM_LENGTHS) (e.g. a config typo), the
-    last arm absorbs the difference so the strip is still exactly filled,
-    same "pad the odd one out" idea output_loop uses for a mismatched zone.
+    2026-08-10 post-soldering: 36/20/16/22, physically unequal, so the old
+    "split n_pixels evenly across ARM_COUNT" approach doesn't apply) - arm
+    order here is the physical chain order (arm 0 is whichever arm's pixels
+    the data line reaches first out of accelerometer_strip, not an arbitrary
+    label), and ARM_ANGLES_DEG/ARM_REVERSED below are given in that same
+    order. If the actual zone's n_pixels doesn't match sum(ARM_LENGTHS) (e.g.
+    a config typo), the last arm absorbs the difference so the strip is
+    still exactly filled, same "pad the odd one out" idea output_loop uses
+    for a mismatched zone.
 
-    ARM_ANGLES_DEG and ARM_REVERSED below are still placeholders - which
-    physical arm each ARM_LENGTHS entry actually corresponds to, its real
-    angle, and its wiring direction are all pending an on-site measurement
-    pass (angles are ergonomic/visual-design choices, not an even split, and
-    per-arm wiring direction is driven by physical routing/cable-run
-    constraints - some arms wired hub-to-tip, others tip-to-hub, not a
-    simple alternating pattern). Once known:
-    - ARM_ANGLES_DEG: swing the stick toward each arm in turn and watch
-      `sensors.angle_deg` on the admin dashboard; set each arm's entry to
-      the angle that lit it.
-    - ARM_REVERSED: True for an arm whose data line runs tip-to-hub in
-      increasing pixel order within its slice of the strip, False for
-      hub-to-tip - check each arm individually rather than assuming a
-      pattern across arms."""
+    ARM_ANGLES_DEG (confirmed 2026-08-10, approximate - a closer on-site
+    remeasurement is still expected, these are eyeballed not precision-
+    measured) and ARM_REVERSED (confirmed 2026-08-10) - angles are
+    ergonomic/visual-design choices, not an even split (20/45/90/135
+    degrees - arm 3 at 90 is straight up), and wiring direction is driven by
+    physical routing/cable-run constraints, not a simple alternating
+    pattern (arms 2 and 4 are wired tip-to-hub, 1 and 3 hub-to-tip, per
+    which end of each arm the physical cable run made easiest to reach).
+    To refine the angles further: swing the stick toward each arm in turn
+    and watch `sensors.angle_deg` on the admin dashboard, and update the
+    entry below to whatever it actually reads."""
 
     ARM_COUNT = 4
-    ARM_LENGTHS = (36, 19, 22, 16)                  # confirmed 2026-08-07 - see docstring; order not yet tied to a physical arm
-    ARM_ANGLES_DEG = (0.0, 90.0, 180.0, 270.0)      # placeholder - recalibrate on-site, see docstring
-    ARM_REVERSED = (False, False, False, False)     # placeholder - recalibrate on-site, see docstring
+    ARM_LENGTHS = (36, 20, 16, 22)                  # confirmed 2026-08-10 post-soldering - see docstring, chain order
+    ARM_ANGLES_DEG = (20.0, 45.0, 90.0, 135.0)      # confirmed 2026-08-10, approximate - see docstring
+    ARM_REVERSED = (False, True, False, True)       # confirmed 2026-08-10 - arms 2 and 4 wired tip-to-hub, see docstring
     IDLE_THRESHOLD = 0.08                  # below this arm-weight*intensity, that arm isn't "being swung toward"
     GLIDE_SPEED = 0.6                      # pixels/tick at intensity=1.0 - tune once the arm length is real
 

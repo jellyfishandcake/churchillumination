@@ -12,8 +12,29 @@ DEFAULTS = {
     # boundary if ever exposed further than that.
     "server": {"host": "0.0.0.0", "port": 8000},
     "leds": {
-        "num_pixels": 153,  # total APA102 pixels - only counts zones below with output.type "led": heart_rate 60 + accelerometer 93 (4 arms, 36+19+22+16 - see TriArmGlideEffect.ARM_LENGTHS). temp_humidity is a DMX bar now, not counted here. match this to your physical strip length
+        # Virtual/dashboard-only total across every output.type "led" zone -
+        # feeds server.latest["leds"]["num_pixels"] for the browser's pixel
+        # map + sketch-canvas sampling (see main.py's main()). Doesn't map to
+        # one physical chain anymore - see "strips" below for that. Keep
+        # this equal to the sum of every led zone's output.pixels: heart_rate
+        # 60 + accelerometer 94 (4 arms, 36+20+16+22 - see
+        # TriArmGlideEffect.ARM_LENGTHS). temp_humidity is a DMX bar, not
+        # counted here.
+        "num_pixels": 154,
         "layout": "strip",
+        # Real APA102 hardware chains - heart_rate and accelerometer are two
+        # independent chains now, NOT data-connected to each other (separate
+        # data+clock pin pairs, not one continuous strip spliced together
+        # like an earlier plan assumed - each strip is its own LEDStrip/SPI
+        # bus, see main.py's main()). Each led zone below picks one via
+        # output.strip. accelerometer_strip's spi_bus: 1 (GPIO 20/21,
+        # confirmed 2026-08-10 as the right pins) needs
+        # `dtoverlay=spi1-3cs` added to /boot/firmware/config.txt + a reboot
+        # before /dev/spidev1.0 exists - not yet confirmed done.
+        "strips": {
+            "heart_rate_strip": {"num_pixels": 60, "spi_bus": 0, "spi_device": 0},
+            "accelerometer_strip": {"num_pixels": 94, "spi_bus": 1, "spi_device": 0},
+        },
         # Final output multiplier, applied after gamma correction (see
         # led_effects.apply_gamma) right before pixels go to hardware. The
         # APA102 driver's own per-pixel brightness byte is already left at
@@ -38,13 +59,16 @@ DEFAULTS = {
         # step() parameter names.
         #
         # Each zone's `output` says which hardware it actually drives:
-        #   {type: led, pixels: N}   - a slice of the APA102 strip. `pixels`
-        #     across all `led` zones should sum to num_pixels above;
-        #     output_loop pads/clamps the last led zone if they don't,
-        #     rather than crashing over a config typo. Physical sections are
-        #     modular/reorderable panels (detachable clips) but one
+        #   {type: led, strip: name, pixels: N}   - a slice of one of the
+        #     independent APA102 chains in "strips" above (`strip` must be a
+        #     key there). `pixels` across all `led` zones sharing one strip
+        #     should sum to that strip's own num_pixels; output_loop
+        #     pads/clamps the last zone on that strip if they don't, rather
+        #     than crashing over a config typo. Zones sharing a strip are
+        #     modular/reorderable panels (detachable clips) on one
         #     continuous electrical chain, so reordering them physically
-        #     just means reordering the `led` zones in this list.
+        #     just means reordering those zones in this list - but zones on
+        #     *different* strips are never electrically connected at all.
         #   {type: dmx, start_address: N, channels: [...], pixels: N} - a
         #     DMX512 fixture (e.g. an RGB/RGBW wall-washer bar) over a
         #     USB-DMX interface, driven in parallel with the strip - see
@@ -101,7 +125,7 @@ DEFAULTS = {
                     "intensity": "heart_rate.engaged",
                     "bpm": {"path": "heart_rate.bpm", "min": 40, "max": 180},
                 },
-                "output": {"type": "led", "pixels": 60},  # 1m strip, confirmed 2026-08-07
+                "output": {"type": "led", "strip": "heart_rate_strip", "pixels": 60},  # 1m strip, confirmed 2026-08-07
             },
             {
                 "name": "accelerometer",
@@ -110,19 +134,22 @@ DEFAULTS = {
                 # accel_stick's raw [0, 360) swing angle maps to 0..1, see
                 # TriArmGlideEffect's docstring. This used to be a single-
                 # pixel DMX fixture (DirectionalWaveEffect) - now a
-                # continuous-strip `led` zone instead, spliced onto the same
-                # chain as heart_rate, since the physical design moved to
-                # arms radiating from a shared hub rather than one linear bar.
+                # continuous-strip `led` zone instead, on its own independent
+                # chain (accelerometer_strip, SPI1) - NOT data-connected to
+                # heart_rate, since the physical design moved to arms
+                # radiating from a shared hub rather than one linear bar and
+                # the two zones ended up wired as two separate chains rather
+                # than one spliced-together strip.
                 "source": {
                     "intensity": "sensors.acceleration",
                     "angle": {"path": "sensors.angle_deg", "min": 0, "max": 360},
                 },
-                # 93 = 36+19+22+16, confirmed 2026-08-07: 4 arms (design
-                # changed from the original 3-arm idea), unequal lengths -
-                # see TriArmGlideEffect.ARM_LENGTHS. ARM_ANGLES_DEG/
-                # ARM_REVERSED there are still placeholders pending on-site
-                # angle/wiring-direction measurement.
-                "output": {"type": "led", "pixels": 93},
+                # 94 = 36+20+16+22, confirmed 2026-08-10 post-soldering: 4
+                # arms (design changed from the original 3-arm idea),
+                # unequal lengths, angles 20/45/90/135 (approximate, arm 3
+                # straight up), arms 2+4 wired tip-to-hub - see
+                # TriArmGlideEffect.ARM_LENGTHS/ARM_ANGLES_DEG/ARM_REVERSED.
+                "output": {"type": "led", "strip": "accelerometer_strip", "pixels": 94},
             },
         ],
     },
