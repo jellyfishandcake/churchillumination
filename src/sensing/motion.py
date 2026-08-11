@@ -64,8 +64,8 @@ class MotionSensor(Sensor):
     # so a shadow doesn't visibly fade while someone's just standing there.
     BASELINE_ALPHA = 0.005
 
-    def __init__(self, sensitivity: float = 10.0, webcam_sensitivity: float = 8.0,
-                 blob_threshold: tuple = (2.0, 6.0), webcam_blob_threshold: tuple = (15.0, 60.0)):
+    def __init__(self, sensitivity: float = 0.5, webcam_sensitivity: float = 8.0,
+                 blob_threshold: tuple = (2.0, 5.0), webcam_blob_threshold: tuple = (15.0, 60.0)):
         super().__init__()
         self.sensitivity = sensitivity
         self.webcam_sensitivity = webcam_sensitivity
