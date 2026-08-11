@@ -174,4 +174,16 @@ class MotionSensor(Sensor):
             motion = min(1.0, (diff.mean() / 255.0) * self.webcam_sensitivity)  # diff is 0-255 grayscale
 
         self._mark_ok()
-        return {"motion": motion, **blob_reading}
+        # motion_raw_diff: the unscaled diff.mean() in native units (°C for
+        # thermal, 0-255 grayscale for webcam), before sensitivity/clamping -
+        # not consumed by any zone (config.yaml only ever references
+        # `motion`), purely so tools/calibrate_sensor.py's min/max/mean
+        # readout is actually useful here. `sensitivity`/`webcam_sensitivity`
+        # are untuned placeholders (see class docstring) and easy to
+        # saturate: sensitivity=10.0 clips `motion` to 1.0 at just a 0.1°C
+        # mean frame-to-frame diff, well within ordinary sensor read noise -
+        # if `motion` is pinned at 1.0 with nobody around, watch
+        # motion_raw_diff for a stretch (calibrate_sensor.py motion) and
+        # raise sensitivity's denominator (i.e. lower the constant) until
+        # idle noise reads near 0 and only real movement pushes it toward 1.
+        return {"motion": motion, "motion_raw_diff": float(diff.mean()), **blob_reading}

@@ -292,7 +292,10 @@ def _led_zone_pixel_ranges(zones_config: list, strips: dict) -> dict:
     led_zones = [zone for zone in zones_config if zone["output"]["type"] == "led"]
     zones_by_strip = {}
     for zone in led_zones:
-        strip_name = zone["output"]["strip"]
+        strip_name = zone["output"].get("strip")
+        if strip_name is None:
+            print(f"[output_loop] zone {zone['name']!r} has no output.strip set (old single-strip config?) - dropped, add a strip: <name> matching one of leds.strips to config.yaml")
+            continue
         if strip_name not in strips:
             print(f"[output_loop] zone {zone['name']!r} references unknown strip {strip_name!r} - dropped, check leds.strips/leds.zones agree in config.yaml")
             continue
