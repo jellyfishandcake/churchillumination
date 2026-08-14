@@ -78,7 +78,7 @@ class MotionSensor(Sensor):
     BASELINE_ALPHA = 0.005
 
     def __init__(self, sensitivity: float = 10.0, webcam_sensitivity: float = 8.0,
-                 human_temp_range: tuple = (27.0, 34.0), webcam_blob_threshold: tuple = (15.0, 60.0)):
+                 blob_threshold: tuple = (2.0, 6.0), webcam_blob_threshold: tuple = (15.0, 60.0)):
         super().__init__()
         self.sensitivity = sensitivity
         self.webcam_sensitivity = webcam_sensitivity
