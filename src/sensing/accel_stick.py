@@ -34,6 +34,7 @@ except ImportError:
     serial = None
 
 STALE_AFTER_SECONDS = 10.0
+MAX_RX_BUFFER_BYTES = 4096  # a real JSON line here is well under 100 bytes - see _poll_serial's overflow guard
 
 
 class AccelStickSensor(Sensor):
@@ -43,6 +44,7 @@ class AccelStickSensor(Sensor):
         self._latest_acceleration = 0.0
         self._latest_angle_deg = 0.0
         self._latest_at = 0.0
+        self._rx_buffer = b""  # bytes received so far that don't yet form a complete newline-terminated line
 
         if serial is not None:
             try:
@@ -52,10 +54,40 @@ class AccelStickSensor(Sensor):
 
     def _poll_serial(self) -> None:
         """Drain any buffered lines, keeping only the most recent reading -
-        this is a live sensor value, not a queue of history to replay."""
+        this is a live sensor value, not a queue of history to replay.
+
+        Reads raw bytes and buffers/splits on newlines by hand rather than
+        calling pyserial's readline() directly - with timeout=0 (non-
+        blocking, required so this never stalls sensor_loop's asyncio event
+        loop waiting on serial I/O), readline() returns whatever partial
+        bytes happen to be available the instant it's called rather than
+        waiting for a full line (confirmed against pyserial's own docs/
+        issue tracker, e.g. github.com/pyserial/pyserial/issues/248) - since
+        this poll and the M5Stick's own ~20Hz send loop aren't synchronised,
+        that was silently truncating JSON mid-line on most polls, which
+        failed json.loads() and got discarded every time - acceleration/
+        angle_deg then never left their 0.0 defaults despite the stick
+        genuinely sending valid data the whole time (confirmed 2026-08-14:
+        raw serial via `cat` showed clean JSON while this class reported
+        exact zero). Buffering raw bytes across polls instead means a line
+        split across two polls still gets assembled correctly before
+        json.loads() ever sees it."""
         try:
-            while self._serial.in_waiting:
-                line = self._serial.readline()
+            chunk = self._serial.read(self._serial.in_waiting)
+            if not chunk:
+                return
+            self._rx_buffer += chunk
+            if len(self._rx_buffer) > MAX_RX_BUFFER_BYTES:
+                # No newline for way longer than any real JSON line here
+                # should ever take (a garbled connection, or a firmware
+                # that's stopped sending \n-terminated lines) - drop it
+                # rather than let this grow unbounded over a weeks-long
+                # unattended run. Losing whatever partial line was in
+                # flight is fine; the next complete line still gets read
+                # normally.
+                self._rx_buffer = b""
+            *complete_lines, self._rx_buffer = self._rx_buffer.split(b"\n")
+            for line in complete_lines:
                 try:
                     payload = json.loads(line.decode().strip())
                     acceleration = float(payload["acceleration"])
