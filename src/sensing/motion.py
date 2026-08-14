@@ -46,33 +46,46 @@ class MotionSensor(Sensor):
     calibrating against the real sensor once it's in hand, not guessed.
     webcam_sensitivity only matters on the dev-machine webcam fallback.
 
-    Also maintains a per-pixel background baseline, far slower-adapting
-    than the frame-to-frame diff `motion` above is built from, and uses it
-    to isolate a person-shaped "blob" by absolute temperature/brightness
-    rather than by change - a person standing still keeps showing up here
-    even though `motion` itself settles back toward 0 for them within a
-    couple frames. Built for web/shadow.html's projector shadow-cast
-    effect: whichever pixels currently read warmer than the slow baseline
-    are "person", published as a 0..1 mask (see read()'s thermal_mask/
-    thermal_width/thermal_height). blob_threshold/webcam_blob_threshold are
-    just as untuned as sensitivity/webcam_sensitivity above - calibrate
-    against a real person in the real room once the hardware's in hand."""
+    For the shadow-cast blob (web/shadow.html's projector effect - whichever
+    pixels currently read as "person" are published as a 0..1 mask, see
+    read()'s thermal_mask/thermal_width/thermal_height): thermal frames use
+    an ABSOLUTE temperature threshold (human_temp_range), not a background-
+    baseline diff. A baseline-diff approach was tried first and dropped
+    (2026-08-11) after real-hardware testing showed the whole frame reading
+    as foreground simultaneously - baseline drift (sensor self-heating
+    after power-on, general room warming, or a few cnt>4 I2C hiccups
+    feeding a noisy baseline) can push EVERY pixel "above its own baseline"
+    at once, which an absolute threshold simply can't do, since it doesn't
+    depend on any history at all - a pixel is either in the human range or
+    it isn't, tick to tick. human_temp_range is a placeholder (a clothed/
+    skin surface reading, room ambient assumed well below it) - calibrate
+    with `python -m tools.calibrate_sensor motion --live` and watch
+    thermal_frame_min/max/mean with the room empty vs a person in frame,
+    then set this to comfortably above the empty-room max.
 
-    # Per-tick EMA rate for the background model - deliberately far slower
-    # than any single frame-diff (SMOOTHING_ALPHA-scale would still fade a
-    # stationary person out within seconds); this is closer to "minutes"
-    # so a shadow doesn't visibly fade while someone's just standing there.
+    webcam_blob_threshold keeps the OLD baseline-diff approach (dev-only
+    fallback, not deployment hardware) - a fixed "brightness above N" cutoff
+    doesn't make sense for an ordinary camera the way it does for a thermal
+    one, since ordinary lighting varies scene to scene in a way body-surface
+    temperature doesn't. Still just as untuned as webcam_sensitivity -
+    doesn't matter for the real installation."""
+
+    # Per-tick EMA rate for the webcam fallback's background model -
+    # deliberately far slower than any single frame-diff (SMOOTHING_ALPHA-
+    # scale would still fade a stationary person out within seconds); this
+    # is closer to "minutes" so a shadow doesn't visibly fade while someone's
+    # just standing there. Thermal frames don't use this at all - see above.
     BASELINE_ALPHA = 0.005
 
     def __init__(self, sensitivity: float = 10.0, webcam_sensitivity: float = 8.0,
-                 blob_threshold: tuple = (2.0, 6.0), webcam_blob_threshold: tuple = (15.0, 60.0)):
+                 human_temp_range: tuple = (27.0, 34.0), webcam_blob_threshold: tuple = (15.0, 60.0)):
         super().__init__()
         self.sensitivity = sensitivity
         self.webcam_sensitivity = webcam_sensitivity
-        self.blob_threshold = blob_threshold  # (low, high) °C above baseline -> mask ramps 0..1 across this range
-        self.webcam_blob_threshold = webcam_blob_threshold  # same idea, 0-255 grayscale units - dev fallback only
+        self.human_temp_range = human_temp_range  # (low, high) °C, absolute - mask ramps 0..1 across this range
+        self.webcam_blob_threshold = webcam_blob_threshold  # (low, high) °C-above-baseline-equivalent, 0-255 grayscale units - dev fallback only, see docstring
         self._prev = None
-        self._baseline = None  # slow per-pixel background model, seeded from the first frame
+        self._baseline = None  # slow per-pixel background model, webcam fallback only - see docstring
         self._active = False  # MLX90640 present
         self._cv_cam = None   # dev-machine webcam fallback
 
@@ -104,10 +117,17 @@ class MotionSensor(Sensor):
 
     def _blob_mask(self, frame, is_thermal):
         """0..1 per-pixel foreground strength, flat (same shape as `frame`)
-        - see the class docstring. Updates (and, on the first call, seeds)
-        the slow background baseline as a side effect, so callers get a
-        mask "for free" alongside `motion` on each read() rather than
-        needing a second call per tick."""
+        - see the class docstring for why thermal and webcam frames use two
+        different approaches here (absolute threshold vs background-baseline
+        diff, respectively)."""
+        if is_thermal:
+            low, high = self.human_temp_range
+            return np.clip((frame - low) / (high - low), 0.0, 1.0)
+
+        # Webcam fallback only, from here down - baseline-diff, updated
+        # (and, on the first call, seeded) as a side effect, so callers get
+        # a mask "for free" alongside `motion` on each read() rather than
+        # needing a second call per tick.
         if self._baseline is None:
             self._baseline = frame.astype(float).copy()
             return np.zeros_like(frame, dtype=float)
@@ -115,7 +135,7 @@ class MotionSensor(Sensor):
         diff = frame - self._baseline
         self._baseline += self.BASELINE_ALPHA * (frame - self._baseline)
 
-        low, high = self.blob_threshold if is_thermal else self.webcam_blob_threshold
+        low, high = self.webcam_blob_threshold
         return np.clip((diff - low) / (high - low), 0.0, 1.0)
 
     def read(self) -> dict:
@@ -160,6 +180,16 @@ class MotionSensor(Sensor):
             "thermal_width": width,
             "thermal_height": height,
         }
+        if is_thermal:
+            # Raw absolute per-pixel temperature stats, °C - not consumed by
+            # any zone or by _blob_mask's own math above, purely so
+            # tools/calibrate_sensor.py's min/max/mean readout gives real
+            # numbers to set human_temp_range from: run `calibrate_sensor.py
+            # motion --live` and watch these with the room empty (sets your
+            # floor) vs a person standing in frame (sets your ceiling).
+            blob_reading["thermal_frame_min"] = float(frame.min())
+            blob_reading["thermal_frame_max"] = float(frame.max())
+            blob_reading["thermal_frame_mean"] = float(frame.mean())
 
         if self._prev is None:
             self._prev = frame

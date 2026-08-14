@@ -10,6 +10,16 @@ humidity bounds, or the heart_rate zone's bpm range).
 Usage:
     python -m tools.calibrate_sensor multisensor --duration 60
     python -m tools.calibrate_sensor heart_rate --duration 30 --interval 0.2
+    python -m tools.calibrate_sensor motion --live
+                                                     # --live prints every reading as it happens (not just the
+                                                     # end-of-run summary) - watch it scroll while you actually
+                                                     # make noise / walk in front of the camera / whatever the
+                                                     # sensor responds to, so you can see cause and effect in
+                                                     # real time rather than only getting an aggregate after the
+                                                     # fact. List/array fields (e.g. motion's thermal_mask) are
+                                                     # skipped in the live line - same numeric-only filter the
+                                                     # end-of-run stats already use, otherwise a 768-element
+                                                     # array would flood the terminal every tick.
 """
 import argparse
 import time
@@ -23,6 +33,7 @@ def main():
     parser.add_argument("sensor", help="sensor name from config.yaml's sensors: block")
     parser.add_argument("--interval", type=float, default=0.5, help="seconds between reads (default: 0.5)")
     parser.add_argument("--duration", type=float, default=None, help="stop automatically after this many seconds (default: run until Ctrl+C)")
+    parser.add_argument("--live", action="store_true", help="also print each reading as it happens, not just the end-of-run summary")
     args = parser.parse_args()
 
     config = load_config()
@@ -50,10 +61,15 @@ def main():
         while args.duration is None or (time.monotonic() - start) < args.duration:
             reading = sensor.read()
             n_reads += 1
-            for key, value in reading.items():
-                is_numeric = isinstance(value, (int, float)) and not isinstance(value, bool)
-                if not is_numeric:
-                    continue
+            numeric_items = [
+                (key, value) for key, value in reading.items()
+                if isinstance(value, (int, float)) and not isinstance(value, bool)
+            ]
+            if args.live:
+                elapsed = time.monotonic() - start
+                line = "  ".join(f"{key}={value:.3f}" for key, value in numeric_items)
+                print(f"[{elapsed:6.1f}s] {line}")
+            for key, value in numeric_items:
                 s = stats.setdefault(key, {"min": value, "max": value, "sum": 0.0, "count": 0})
                 s["min"] = min(s["min"], value)
                 s["max"] = max(s["max"], value)
