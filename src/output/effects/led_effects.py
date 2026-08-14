@@ -390,9 +390,16 @@ class TriArmGlideEffect:
     toward the tip at a speed set by intensity - a harder shake reaches
     further, faster. Once the swing moves on (this arm's drive drops back
     below threshold), the head holds its position and fades with the rest
-    of the trail rather than snapping back, then resets to the hub so the
-    next swing toward this arm starts from the centre again, not wherever
-    the last one left off.
+    of the trail rather than snapping back immediately - a real hand-shake
+    oscillates (drive rises and falls rhythmically, not a smooth sustained
+    push), so resetting on the very first below-threshold tick would wipe
+    out progress almost every tick and never show a real glide, just brief
+    near-hub blips (this was a real bug, not just a calibration issue - the
+    code used to do exactly that, contradicting this docstring's own
+    description of the intended behaviour). IDLE_RESET_SECONDS is how long
+    the dip has to persist - a genuine pause, not mid-shake oscillation -
+    before the head actually resets to the hub so the next swing starts
+    from the centre again, not wherever the last one left off.
 
     ARM_LENGTHS gives each arm's pixel count explicitly (confirmed
     2026-08-10 post-soldering: 36/20/16/22, physically unequal, so the old
@@ -423,6 +430,8 @@ class TriArmGlideEffect:
     ARM_REVERSED = (False, True, False, True)       # confirmed 2026-08-10 - arms 2 and 4 wired tip-to-hub, see docstring
     IDLE_THRESHOLD = 0.08                  # below this arm-weight*intensity, that arm isn't "being swung toward"
     GLIDE_SPEED = 0.6                      # pixels/tick at intensity=1.0 - tune once the arm length is real
+    TICK_SECONDS = 0.05                    # matches main.py's output_loop's fixed 20Hz - see PulseEffect's own note on this same assumption
+    IDLE_RESET_SECONDS = 1.0               # how long a dip below IDLE_THRESHOLD must persist before that arm's head actually resets to the hub - see step()'s docstring
 
     def __init__(self, n_pixels, palette, decay=0.9, background_level=0.05):
         self.lut = _palette_lut(palette)
@@ -436,6 +445,7 @@ class TriArmGlideEffect:
         self.arm_ranges = list(zip(starts, lengths))  # (start, length) per arm, in the shared trail array
         self.arm_center_rad = [np.radians(deg) for deg in self.ARM_ANGLES_DEG]
         self.head_pos = [0.0] * self.ARM_COUNT  # hub-relative sub-pixel distance per arm
+        self._idle_elapsed = [0.0] * self.ARM_COUNT  # seconds since drive last exceeded IDLE_THRESHOLD, per arm
 
     def step(self, intensity: float = 0.0, angle: float = 0.0):
         intensity = min(max(intensity, 0.0), 1.0)
@@ -453,6 +463,7 @@ class TriArmGlideEffect:
             drive = weight * intensity
 
             if drive > self.IDLE_THRESHOLD:
+                self._idle_elapsed[k] = 0.0
                 self.head_pos[k] = min(length - 1, self.head_pos[k] + self.GLIDE_SPEED * intensity)
                 dist0 = int(np.floor(self.head_pos[k]))
                 dist1 = min(length - 1, dist0 + 1)
@@ -464,7 +475,12 @@ class TriArmGlideEffect:
                 self.trail[to_index(dist0)] = max(self.trail[to_index(dist0)], (1 - frac) * head_strength)
                 self.trail[to_index(dist1)] = max(self.trail[to_index(dist1)], frac * head_strength)
             else:
-                self.head_pos[k] = 0.0  # next swing toward this arm starts from the hub again
+                # Hold position through a brief dip (mid-shake oscillation) -
+                # only reset to the hub once the dip's persisted a real
+                # while, see IDLE_RESET_SECONDS/docstring.
+                self._idle_elapsed[k] += self.TICK_SECONDS
+                if self._idle_elapsed[k] >= self.IDLE_RESET_SECONDS:
+                    self.head_pos[k] = 0.0  # next swing toward this arm starts from the hub again
 
         frame = np.tile(self.background, (len(self.trail), 1))
         for k in range(self.ARM_COUNT):

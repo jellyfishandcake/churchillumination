@@ -96,11 +96,15 @@ DEFAULTS = {
             {
                 "name": "temp_humidity",
                 # Was temp_humidity_matrix on a spatial LED panel idea - the
-                # physical build settled on a DMX bar instead (RGBW, 28
-                # segments, confirmed 2026-08-07) - see led_effects.py's
-                # TempHumidityBarEffect docstring. start_address 25 is a
-                # placeholder pending confirmation against the fixture's own
-                # DIP switches, same as ambient's address once was.
+                # physical build settled on a DMX bar instead (RGBW) - see
+                # led_effects.py's TempHumidityBarEffect docstring.
+                # start_address 25 confirmed 2026-08-11 by setting the
+                # fixture's own display to match, same as ambient's address
+                # once was. pixels: 28 is still the original 2026-08-07
+                # segment-count guess, not yet re-confirmed now that the
+                # fixture's actually addressable - watch for a dark "front
+                # bit" beyond the addressed range (tools/test_dmx.py bar
+                # --count) before trusting this number.
                 "effect": "temp_humidity_bar", "palette": "winter",
                 "source": {
                     "temperature": {"path": "sensors.temperature", "min": 15, "max": 30},
@@ -178,6 +182,14 @@ DEFAULTS = {
         "motion": {"enabled": True},
         "multisensor": {"enabled": True},
         "pir": {"enabled": True, "gpio_pin": 4},
+        # Waveshare HMMD mmWave presence sensor (S3KM1110, 24GHz FMCW radar)
+        # - an alternative to pir.py's PIR, being evaluated 2026-08-14 since
+        # PIR only fires on movement (a stationary person can "disappear"
+        # from presence). NOT meant to run alongside pir above - both
+        # publish the same "presence" key, see mmwave.py's docstring.
+        # Defaults disabled since PIR is what's actually wired right now -
+        # flip pir.enabled off and this on once the mmWave unit's connected.
+        "mmwave": {"enabled": False, "gpio_pin": 27},
         "heart_rate": {"enabled": True},
         "accel_stick": {"enabled": True, "serial_port": "/dev/ttyUSB0", "baud_rate": 115200},
         "nodes": {

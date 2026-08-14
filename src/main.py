@@ -24,6 +24,7 @@ from src.sensing.audio import AudioSensor
 from src.sensing.motion import MotionSensor
 from src.sensing.multisensor import MultisensorStick
 from src.sensing.pir import PIRSensor
+from src.sensing.mmwave import MMWaveSensor
 from src.sensing.heart_rate import HeartRateSensor
 from src.sensing.accel_stick import AccelStickSensor
 from src.sensing.nodes import NodeSensor
@@ -64,6 +65,10 @@ def build_sensors(config: dict) -> dict:
         sensors["multisensor"] = MultisensorStick()
     if sensors_config["pir"]["enabled"]:
         sensors["pir"] = PIRSensor(gpio_pin=sensors_config["pir"]["gpio_pin"])
+    if sensors_config["mmwave"]["enabled"]:
+        # Alternative to pir.py's PIRSensor, not meant to run alongside it -
+        # both publish the same "presence" key, see mmwave.py's docstring.
+        sensors["mmwave"] = MMWaveSensor(gpio_pin=sensors_config["mmwave"]["gpio_pin"])
     if sensors_config["heart_rate"]["enabled"]:
         sensors["heart_rate"] = HeartRateSensor()
     if sensors_config["accel_stick"]["enabled"]:

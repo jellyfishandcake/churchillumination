@@ -111,11 +111,14 @@ leds:
         condition: {path: sensors.outdoor_condition_code, min: 0, max: 5}   # weather.py's _CONDITION_ORDER index (clear/cloudy/fog/rain/snow/storm) - must match TempHumidityBarEffect.CONDITION_ORDER
         activated: sensors.activated   # presence (main.py's ActivationTracker) - gates the periodic past-24h replay
         history: {path: sensors.outdoor_history, raw: true}   # past-24h hourly series, unrescaled - see main.py's _resolve_one_source raw passthrough and TempHumidityBarEffect's replay mode
-      # RGBW bar fixture, 28 independently-addressable segments (confirmed
-      # 2026-08-07) - 4 channels/segment x 28 = 112 DMX channels.
-      # start_address 25 is a placeholder (the block right after ambient's
-      # confirmed channels 1-24) - not yet confirmed against this fixture's
-      # own DIP switches; run tools/test_dmx.py --start 25 before trusting it.
+      # RGBW bar fixture - 4 channels/segment. start_address 25 (the block
+      # right after ambient's confirmed channels 1-24) confirmed 2026-08-11
+      # by setting the fixture's own display to match, after testing found
+      # it wasn't listening on 25 until then. pixels: 28 is still the
+      # original segment-count guess from 2026-08-07 - not yet re-confirmed
+      # against the real fixture now that it's actually addressable (see
+      # tools/test_dmx.py bar --count, e.g. try 32, to check for a dark
+      # "front bit" beyond the addressed range before trusting this number).
       output: {type: dmx, start_address: 25, channels: [r, g, b, w], pixels: 28}
     - name: heart_rate
       effect: heart_rate_check_in   # start/read/end check-in flow, not a continuous display - see HeartRateEffect's docstring
@@ -191,6 +194,17 @@ sensors:
   pir:
     enabled: true
     gpio_pin: 4
+
+  # Waveshare HMMD mmWave presence sensor (S3KM1110, 24GHz FMCW radar) -
+  # alternative to pir above, being evaluated 2026-08-14 since PIR only
+  # fires on movement (a stationary person can "disappear" from presence).
+  # NOT meant to run alongside pir - both publish the same "presence" key,
+  # see src/sensing/mmwave.py's docstring. To switch: set pir.enabled false
+  # and this true once wired (gpio_pin is a placeholder - confirm against
+  # whichever Pi GPIO the presence-output pin actually lands on).
+  mmwave:
+    enabled: false
+    gpio_pin: 27
 
   # DFRobot Gravity/Fermion MAX30102 heart-rate/SpO2 sensor over I2C - the
   # module computes HR/SpO2 on its own onboard MCU. Falls back to a mock

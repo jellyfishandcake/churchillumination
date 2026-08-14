@@ -139,6 +139,17 @@ async def handle_client(websocket):
         )
         for t in pending:
             t.cancel()
+        for t in done:
+            # A client disconnecting mid-send/recv raises ConnectionClosed
+            # (OK or Error) - the ordinary way a browser tab closes/reloads,
+            # not a real fault. Retrieving it here (rather than leaving the
+            # finished Task's exception unread) is what actually silences
+            # asyncio's own "Task exception was never retrieved" warning +
+            # traceback - that noisy log was always just this, never a sign
+            # anything was actually broken.
+            exc = t.exception()
+            if exc is not None and not isinstance(exc, websockets.ConnectionClosed):
+                print(f"[server] handle_client: unexpected error: {exc!r}")
     finally:
         clients.discard(websocket)
         admin_clients.discard(websocket)

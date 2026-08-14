@@ -122,8 +122,13 @@ pre {
 #back-link a { color: var(--muted); }
 
 /* Shared by index.html's read-only zone display and admin.html's Zones
-   tab - see web/zoneUtils.js. */
-.swatch-strip { width: 100%; height: 32px; image-rendering: pixelated; border-radius: 4px; margin-top: 0.5rem; display: block; }
+   tab - see web/zoneUtils.js. Explicit black background: paintSwatchStrip
+   fades dim/off pixels toward transparent (real per-pixel alpha, see its
+   own docstring) specifically so they read as dark/off like an actual
+   unlit LED - that only works if what's behind the canvas is actually
+   dark. Without this it defaulted to the page's cream --bg showing
+   through instead, so dim colours read as washed-out grey rather than off. */
+.swatch-strip { width: 100%; height: 32px; image-rendering: pixelated; border-radius: 4px; margin-top: 0.5rem; display: block; background: #000; }
 #zones-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; }
 .zone-card { background: var(--bg); border: 1px solid var(--hairline); border-radius: 6px; padding: 1rem; }
 .zone-card h3 { margin: 0 0 0.6rem; font-family: var(--font-label); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; }
