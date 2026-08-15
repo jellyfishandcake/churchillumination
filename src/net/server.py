@@ -366,6 +366,19 @@ SKETCHES_DIR = WEB_DIR / "sketches"
 # as SKETCHES_DIR.
 UPLOADS_DIR = WEB_DIR / "uploads"
 
+# latest["shadow_backdrop"]["version"] starts at 0 (see its definition near
+# the top of this file) meaning "nobody's uploaded a backdrop yet" -
+# shadow.js deliberately treats version 0 as "nothing to fetch" so it
+# doesn't request a file that was never uploaded. But a previous upload's
+# shadow_backdrop.jpg survives a server restart on disk even though the
+# in-memory `latest` dict resets to that same 0 - without this check,
+# shadow.html would silently keep showing its plain dark fallback forever
+# after any restart, even with a perfectly good backdrop sitting right
+# here, until someone re-uploads via backdrop.html. Bumping straight to 1
+# mirrors what the first real upload would have set it to.
+if (UPLOADS_DIR / "shadow_backdrop.jpg").exists():
+    latest["shadow_backdrop"]["version"] = 1
+
 MIME_TYPES = {
     ".html": "text/html",
     ".js": "application/javascript",
