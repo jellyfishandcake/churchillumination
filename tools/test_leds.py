@@ -54,7 +54,7 @@ def main():
     parser.add_argument("args_list", nargs="*", help="'solid': r g b (0-255). 'chase' takes none (use --color).")
     parser.add_argument("--start", type=int, default=0, help="0-based pixel index to start at (default: 0)")
     parser.add_argument("--count", type=int, default=None, help="how many pixels to affect from --start (default: rest of the strip)")
-    parser.add_argument("--num-pixels", type=int, default=38, help="total strip length - match whichever strip's num_pixels in config.yaml's leds.strips (default: 38)")
+    parser.add_argument("--num-pixels", type=int, default=60, help="total strip length - match whichever strip's num_pixels in config.yaml's leds.strips (default: 38)")
     parser.add_argument("--color", type=int, nargs=3, default=[255, 255, 255], metavar=("R", "G", "B"), help="chase pixel colour (default: white)")
     parser.add_argument("--speed", type=float, default=0.12, help="chase seconds per pixel step (default: 0.12, ~3px/sec)")
     parser.add_argument("--spi-bus", type=int, default=0, help="SPI bus - 0 for heart_rate_strip, 1 for accelerometer_strip (default: 0, see config.yaml's leds.strips)")
