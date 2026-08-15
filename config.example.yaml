@@ -99,7 +99,15 @@ leds:
         motion: sensors.motion                                    # drives wave speed
         env_brightness: {path: sensors.lux, min: 0, max: 500}     # keeps the strip visible against room light rather than reacting to loudness/motion - untested placeholder range, recalibrate on-site
         ripple: interactions.audio_ripple                         # laughter/applause/cheering/music flash - see intelligence/audio_moments.py
-      output: {type: dmx, start_address: 1, channels: [r, g, b], pixels: 8}   # RGB fixture, 8 segments x 3 big bulbs each - confirmed via test_dmx.py --start probing
+      # Two of the RGB fixture (8 segments x 3 big bulbs each = 24ch)
+      # chained back-to-back, addressed as one continuous 16-segment run
+      # rather than two separate zones - audio_reactive_wave's gradient
+      # spreads across both bars as a single wave. Bar 1's channels 1-24
+      # confirmed via test_dmx.py --start probing; bar 2 needs its own
+      # start_address set to 25 on its display/DIP switches before pixels:
+      # 16 is anything but a guess - confirm with test_dmx.py bar --start 1
+      # --count 16 the same way.
+      output: {type: dmx, start_address: 1, channels: [r, g, b], pixels: 16}
     - name: temp_humidity
       effect: temp_humidity_bar   # was temp_humidity_matrix on a spatial LED panel idea - physical build settled on a DMX bar instead, see led_effects.py's TempHumidityBarEffect docstring
       palette: winter
@@ -111,15 +119,17 @@ leds:
         condition: {path: sensors.outdoor_condition_code, min: 0, max: 5}   # weather.py's _CONDITION_ORDER index (clear/cloudy/fog/rain/snow/storm) - must match TempHumidityBarEffect.CONDITION_ORDER
         activated: sensors.activated   # presence (main.py's ActivationTracker) - gates the periodic past-24h replay
         history: {path: sensors.outdoor_history, raw: true}   # past-24h hourly series, unrescaled - see main.py's _resolve_one_source raw passthrough and TempHumidityBarEffect's replay mode
-      # RGBW bar fixture - 4 channels/segment. start_address 25 (the block
-      # right after ambient's confirmed channels 1-24) confirmed 2026-08-11
-      # by setting the fixture's own display to match, after testing found
-      # it wasn't listening on 25 until then. pixels: 28 is still the
-      # original segment-count guess from 2026-08-07 - not yet re-confirmed
-      # against the real fixture now that it's actually addressable (see
-      # tools/test_dmx.py bar --count, e.g. try 32, to check for a dark
-      # "front bit" beyond the addressed range before trusting this number).
-      output: {type: dmx, start_address: 25, channels: [r, g, b, w], pixels: 28}
+      # RGBW bar fixture - 4 channels/segment. start_address moved to 49
+      # (2026-08-15, the block right after ambient's now-16-segment/48ch
+      # span from adding a second bar there) - was 25, confirmed 2026-08-11
+      # by setting the fixture's own display to match; that same step needs
+      # redoing at 49 before this is anything but a guess, same as before.
+      # pixels: 28 is still the original segment-count guess from 2026-08-07
+      # - not yet re-confirmed against the real fixture now that it's
+      # actually addressable (see tools/test_dmx.py bar --count, e.g. try
+      # 32, to check for a dark "front bit" beyond the addressed range
+      # before trusting this number).
+      output: {type: dmx, start_address: 49, channels: [r, g, b, w], pixels: 28}
     - name: heart_rate
       effect: heart_rate_check_in   # start/read/end check-in flow, not a continuous display - see HeartRateEffect's docstring
       palette: festive
