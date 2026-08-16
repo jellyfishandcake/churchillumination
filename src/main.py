@@ -483,7 +483,24 @@ async def output_loop(strips, dmx, zones_config, brightness: float = 1.0):
                 # WOULD send, so it should reflect the effect running even
                 # before the interface is enabled/wired up. Only the actual
                 # hardware write below is gated on dmx_universe existing.
-                dmx_frames[name] = graded_frame
+                #
+                # Brightness-scaled but deliberately NOT gamma-corrected -
+                # gamma exists to compensate for how a real fixture's
+                # perceived brightness scales non-linearly with its raw
+                # signal (see apply_gamma's docstring). A browser already
+                # applies its own gamma decode when painting an RGB colour
+                # on screen, so broadcasting the same gamma-corrected value
+                # sent to hardware double-applies that curve and crushes
+                # already-dim effect output toward black well before the
+                # real fixture would look anywhere near that dark in
+                # person. graded_frame (gamma-corrected) is still what
+                # actually reaches the universe below - this preview is
+                # display-only.
+                if brightness != 1.0:
+                    preview_frame = np.clip(frame.astype(np.float32) * brightness, 0, 255).astype(np.uint8)
+                else:
+                    preview_frame = frame
+                dmx_frames[name] = preview_frame
                 if dmx_universe is not None:
                     channels_layout = output["channels"]
                     # Segment i's channels sit right after segment i-1's, in
@@ -509,19 +526,32 @@ async def output_loop(strips, dmx, zones_config, brightness: float = 1.0):
             # Clips rather than rescales so a boosted highlight can flatten
             # to solid white instead of the whole frame dimming to compensate.
             graded = np.clip(graded.astype(np.float32) * brightness, 0, 255).astype(np.uint8)
-        led_frame = graded.tolist()  # numpy -> plain ints, for JSON - dashboard-facing, one flat array same as before the multi-strip split
+        hardware_frame = graded.tolist()  # numpy -> plain ints - gamma-corrected, for the real strips only, see led_frame below
 
-        # Re-slice that same graded data back apart by zone into each real
-        # physical strip's own buffer (strip-local offsets, from led_ranges),
-        # then send each strip independently - this is the one place the
-        # two-chain hardware split actually shows up; the dashboard-facing
-        # led_frame above stays a single flat array regardless.
+        # Brightness-scaled but NOT gamma-corrected, unlike hardware_frame
+        # above - same "a screen already applies its own gamma decode, so
+        # showing hardware_frame's values on screen double-darkens them"
+        # reasoning as the dmx branch above. This is what actually reaches
+        # server.latest/the dashboard; hardware_frame never does.
+        if brightness != 1.0:
+            preview = np.clip(full_frame.astype(np.float32) * brightness, 0, 255).astype(np.uint8)
+        else:
+            preview = full_frame.astype(np.uint8)
+        led_frame = preview.tolist()  # dashboard-facing, one flat array same as before the multi-strip split
+
+        # Re-slice hardware_frame (gamma-corrected - real LEDs, unlike the
+        # dashboard, DO need that correction) back apart by zone into each
+        # real physical strip's own buffer (strip-local offsets, from
+        # led_ranges), then send each strip independently - this is the one
+        # place the two-chain hardware split actually shows up; the
+        # dashboard-facing led_frame above stays a single flat array
+        # regardless.
         strip_buffers = {name: [[0, 0, 0]] * strip.num_pixels for name, strip in strips.items()}
         offset = 0
         for name in ordered_led_zone_names:
             strip_name, local_start, local_end = led_ranges[name]
             length = local_end - local_start
-            strip_buffers[strip_name][local_start:local_end] = led_frame[offset:offset + length]
+            strip_buffers[strip_name][local_start:local_end] = hardware_frame[offset:offset + length]
             offset += length
         for strip_name, strip in strips.items():
             strip.render_pixels(strip_buffers[strip_name])

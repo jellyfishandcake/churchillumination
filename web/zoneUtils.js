@@ -14,30 +14,23 @@
 (function () {
 
 // Display-only - the exact `frame` values are still what's sent to the real
-// LEDs via leds.render_pixels() in main.py; this only changes how dim/off
-// pixels are drawn on a webpage. Genuinely transparent (real per-pixel
-// alpha in the canvas's own pixel data, not blended toward a hardcoded
-// backdrop colour by hand) - a dim/off LED fades into whatever's actually
-// behind the .swatch-strip element (the zone-card's own background), not a
-// fixed simulated grey that doesn't match every setup's real backdrop.
+// LEDs via leds.render_pixels() in main.py; this only changes how pixels are
+// drawn on a webpage. Fully opaque (2026-08-16, was alpha-faded toward
+// whatever's behind .swatch-strip by brightness) - that fade meant a dim
+// zone never showed its actual colour, just an increasingly faint blend
+// with the page's background (cream, or black before that), which read as
+// a washed-out grey rather than "this zone's real colour, just dark". Now
+// a dim/off pixel paints as its own dim/dark solid colour instead.
 function paintSwatchStrip(ctx, canvas, frame) {
   const n = frame.length;
   if (canvas.width !== n) canvas.width = n;
   const imageData = ctx.createImageData(n, 1);
   for (let i = 0; i < n; i++) {
     const [r, g, b] = frame[i];
-    // sqrt, not a straight linear ratio - a plain `brightness/255` alpha
-    // fades dim-but-saturated pixels almost to invisible (e.g. a clearly-
-    // red [60,10,10] would sit at alpha 0.24) even though that pixel is
-    // genuinely saturated in the real data sent to the physical LEDs. sqrt
-    // boosts low alphas disproportionately so dim colours still read as
-    // colours here, while true off/near-zero pixels still fade out as
-    // alpha approaches 0.
-    const alpha = Math.sqrt(Math.max(r, g, b) / 255);
     imageData.data[i * 4] = r;
     imageData.data[i * 4 + 1] = g;
     imageData.data[i * 4 + 2] = b;
-    imageData.data[i * 4 + 3] = Math.round(alpha * 255);
+    imageData.data[i * 4 + 3] = 255;
   }
   ctx.putImageData(imageData, 0, 0);
 }
