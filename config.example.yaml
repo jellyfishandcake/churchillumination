@@ -206,7 +206,7 @@ sensors:
   # needs to be backed out.
   pir:
     enabled: false
-    gpio_pin: 4
+    gpio_pin: 17   # was 4 - moved to 17 when disabled in favour of mmwave (below), which now occupies the one physically-soldered pin instead
 
   # Waveshare HMMD mmWave presence sensor (S3KM1110, 24GHz FMCW radar) -
   # replaced pir above as the default 2026-08-17, since PIR only fires on
@@ -214,13 +214,13 @@ sensors:
   # matters more now that the weather zone's replay mode - and
   # activity_level itself, see rules.py's activated-gate - depend on
   # sustained presence). NOT meant to run alongside pir - both publish the
-  # same "presence" key, see src/sensing/mmwave.py's docstring. gpio_pin is
-  # a placeholder - confirm against whichever Pi GPIO the presence-output
-  # pin actually lands on (VCC -> Pi 3.3V, NOT 5V - see mmwave.py's own
-  # wiring note).
+  # same "presence" key, see src/sensing/mmwave.py's docstring. gpio_pin 17 -
+  # the one pin that's actually soldered (moved onto pir's old pin above);
+  # confirm against the presence-output pin's actual silkscreen label if
+  # rewired (VCC -> Pi 3.3V, NOT 5V - see mmwave.py's own wiring note).
   mmwave:
     enabled: true
-    gpio_pin: 27
+    gpio_pin: 17
 
   # DFRobot Gravity/Fermion MAX30102 heart-rate/SpO2 sensor over I2C - the
   # module computes HR/SpO2 on its own onboard MCU. Falls back to a mock
@@ -233,7 +233,7 @@ sensors:
   # from walking off). Falls back to a mock if the port isn't present.
   accel_stick:
     enabled: true
-    serial_port: /dev/ttyUSB0   # e.g. COM3 on Windows dev machines
+    serial_port: /dev/ttyACM0  # M5Stick's native ESP32-S3 USB-serial (VID 303A) on the Pi - was /dev/ttyUSB0 until 2026-08-17, which is actually the DMX dongle (FTDI, VID 0403), a real different device that opened fine but never sent valid readings - a stale copy of that old value on the Pi cost real debugging time, don't reintroduce it. e.g. COM3 on Windows dev machines instead.
     baud_rate: 115200
 
   # 2 Seeed XIAO ESP32S3 Sense nodes (each with mic + MLX90640 thermal
