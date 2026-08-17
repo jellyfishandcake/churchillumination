@@ -66,7 +66,18 @@ resize();
 
 function drawBackground() {
   if (!bg.complete || bg.naturalWidth === 0) {
-    ctx.fillStyle = "#111";
+    // Light, not dark (was #111 until 2026-08-17) - the shadow mask drawn
+    // on top of this is itself dark/black (see drawShadow's alpha-only
+    // black fill), so a dark fallback made the whole page read as solid
+    // black with nothing visible any time no backdrop photo had been
+    // uploaded yet - exactly the case during bring-up/testing, before
+    // backdrop.html has ever been used. A light fallback means the shadow
+    // is actually visible against it instead of blending into the dark.
+    // Matches style.css's --bg (#f7f3ec) so this no-chrome page (no
+    // <link> to style.css - see this file's own header comment on why)
+    // still reads as the same cream as the rest of the dashboard rather
+    // than a mismatched grey.
+    ctx.fillStyle = "#f7f3ec";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     return;
   }

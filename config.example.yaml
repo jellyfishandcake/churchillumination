@@ -201,19 +201,25 @@ sensors:
   # Mini PIR motion sensor on GPIO - the *central* one only. The 2
   # node-mounted PIRs are on the ESP32 boards themselves (see `nodes`
   # below), not wired to the Pi. Falls back to a mock off the Pi.
+  # Disabled by default (2026-08-17) in favour of mmwave below - see its
+  # comment for why. Left here, not deleted, as the fallback if mmwave
+  # needs to be backed out.
   pir:
-    enabled: true
+    enabled: false
     gpio_pin: 4
 
   # Waveshare HMMD mmWave presence sensor (S3KM1110, 24GHz FMCW radar) -
-  # alternative to pir above, being evaluated 2026-08-14 since PIR only
-  # fires on movement (a stationary person can "disappear" from presence).
-  # NOT meant to run alongside pir - both publish the same "presence" key,
-  # see src/sensing/mmwave.py's docstring. To switch: set pir.enabled false
-  # and this true once wired (gpio_pin is a placeholder - confirm against
-  # whichever Pi GPIO the presence-output pin actually lands on).
+  # replaced pir above as the default 2026-08-17, since PIR only fires on
+  # movement (a stationary person can "disappear" from presence, which
+  # matters more now that the weather zone's replay mode - and
+  # activity_level itself, see rules.py's activated-gate - depend on
+  # sustained presence). NOT meant to run alongside pir - both publish the
+  # same "presence" key, see src/sensing/mmwave.py's docstring. gpio_pin is
+  # a placeholder - confirm against whichever Pi GPIO the presence-output
+  # pin actually lands on (VCC -> Pi 3.3V, NOT 5V - see mmwave.py's own
+  # wiring note).
   mmwave:
-    enabled: false
+    enabled: true
     gpio_pin: 27
 
   # DFRobot Gravity/Fermion MAX30102 heart-rate/SpO2 sensor over I2C - the

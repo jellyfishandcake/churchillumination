@@ -361,6 +361,42 @@ class TriArmGlideEffect:
     and is converted back to radians here. `intensity` is the shake's
     magnitude, same signal DirectionalWaveEffect used.
 
+    REDESIGNED 2026-08-17 from a continuous per-tick reactive glide (every
+    tick's raw intensity/angle immediately nudged a head further along
+    whichever arm(s) it aligned with, no notion of "a swing" as a discrete
+    thing) to a discrete swing-detect-then-fire-a-beam model instead: real
+    handheld shakes are noisy tick to tick, so reacting to every instant
+    made the response feel twitchy/glitchy rather than deliberate.
+
+    SWING DETECTION: `intensity` is watched with hysteresis (two
+    thresholds, not one - same "a single fixed cutoff flickers on
+    borderline readings" reasoning as accel_stick.ino's SWING_INVITE
+    thresholds) - crossing above SWING_START_THRESHOLD marks a swing as
+    "in progress" and starts buffering every (intensity, angle) sample;
+    crossing back below the lower SWING_END_THRESHOLD marks it finished.
+    At that point, the buffer's TOP_K_SAMPLES highest-intensity readings -
+    the actual peak of the swing, not its noisy ramp-up/ramp-down - get
+    collapsed into one clean (direction, speed) pair: speed is their plain
+    mean; direction is a *circular* mean (averaging each sample's unit
+    vector, intensity-weighted, then atan2 back), since a plain average of
+    angles breaks near the 0/360 wraparound (e.g. averaging 350 degrees and
+    10 degrees directly gives 180 - exactly backwards - instead of the
+    correct 0). That one summarised reading, not the raw stream, is what
+    drives the light.
+
+    BEAM RENDERING: the finalised (direction, speed) spawns one travelling
+    beam per arm whose cosine-weighted alignment to that direction clears
+    MIN_ARM_WEIGHT - same clamped-cosine falloff idea as before (see the
+    dead-zone/overlap caveat below, still just as true here), just used to
+    decide which arm(s) get a beam at all rather than a continuous
+    per-tick weight. Each arm's beam travels hub -> tip at a speed set by
+    (swing speed * that arm's own alignment weight), with brightness and
+    pixel-width scaled the same way - a harder, more on-target swing
+    produces a beam that's faster, brighter, AND wider (more pixels lit at
+    once), not just brighter. Reaching the tip ends that arm's beam. A new
+    swing detected on an arm already mid-beam just replaces it outright,
+    no blending between the two.
+
     Each arm claims a smooth ~180-degree-wide slice of the circle centred
     on its own spoke, via a clamped cosine falloff: weight = max(0,
     cos(angle - arm_centre)). This self-limiting-to-two-arms property (each
@@ -384,22 +420,6 @@ class TriArmGlideEffect:
     power before clamping) is the fix, not a change to the angles
     themselves - the dead zone in particular may be fine as-is if that
     swing direction isn't ergonomically reachable anyway.
-
-    "Glide out": while a swing keeps an arm's weight * intensity above
-    IDLE_THRESHOLD, that arm's head advances from the hub (distance 0)
-    toward the tip at a speed set by intensity - a harder shake reaches
-    further, faster. Once the swing moves on (this arm's drive drops back
-    below threshold), the head holds its position and fades with the rest
-    of the trail rather than snapping back immediately - a real hand-shake
-    oscillates (drive rises and falls rhythmically, not a smooth sustained
-    push), so resetting on the very first below-threshold tick would wipe
-    out progress almost every tick and never show a real glide, just brief
-    near-hub blips (this was a real bug, not just a calibration issue - the
-    code used to do exactly that, contradicting this docstring's own
-    description of the intended behaviour). IDLE_RESET_SECONDS is how long
-    the dip has to persist - a genuine pause, not mid-shake oscillation -
-    before the head actually resets to the hub so the next swing starts
-    from the centre again, not wherever the last one left off.
 
     ARM_LENGTHS gives each arm's pixel count explicitly (confirmed
     2026-08-10 post-soldering: 36/20/16/22, physically unequal, so the old
@@ -428,14 +448,25 @@ class TriArmGlideEffect:
     ARM_LENGTHS = (36, 20, 16, 22)                  # confirmed 2026-08-10 post-soldering - see docstring, chain order
     ARM_ANGLES_DEG = (20.0, 45.0, 90.0, 135.0)      # confirmed 2026-08-10, approximate - see docstring
     ARM_REVERSED = (False, True, False, True)       # confirmed 2026-08-10 - arms 2 and 4 wired tip-to-hub, see docstring
-    IDLE_THRESHOLD = 0.08                  # below this arm-weight*intensity, that arm isn't "being swung toward"
-    GLIDE_SPEED = 0.6                      # pixels/tick at intensity=1.0 - tune once the arm length is real
     TICK_SECONDS = 0.05                    # matches main.py's output_loop's fixed 20Hz - see PulseEffect's own note on this same assumption
-    IDLE_RESET_SECONDS = 1.0               # how long a dip below IDLE_THRESHOLD must persist before that arm's head actually resets to the hub - see step()'s docstring
 
-    def __init__(self, n_pixels, palette, decay=0.9, background_level=0.05):
+    # Swing detection - all untuned placeholders (feel, not physics, same
+    # caveat as accel_stick.ino's SENSITIVITY) - tune against a real swing
+    # once flashed and wired.
+    SWING_START_THRESHOLD = 0.15   # intensity must climb above this to count as a swing beginning
+    SWING_END_THRESHOLD = 0.08     # then drop back below this to finalise it - see step()'s docstring on why two thresholds, not one
+    PEAK_WINDOW_SECONDS = 1.5      # how far back the sample buffer reaches - must comfortably cover one real swing's whole duration
+    TOP_K_SAMPLES = 4              # how many of the buffer's highest-intensity samples define the finished swing's direction/speed
+    MIN_ARM_WEIGHT = 0.15          # below this cosine-alignment to the swing direction, an arm doesn't get a beam at all
+
+    # Beam rendering - also untuned placeholders.
+    BEAM_SPEED_SCALE = 1.6         # pixels/tick at (swing speed * arm weight) = 1.0
+    BEAM_WIDTH_MIN_PX = 2          # pixels lit around the beam's leading edge at driven strength -> 0
+    BEAM_WIDTH_MAX_PX = 10         # ... at driven strength -> 1 - "more pixels pack" for a harder/more-aligned swing
+    BEAM_DECAY = 0.88              # per-tick trail fade behind a travelling beam
+
+    def __init__(self, n_pixels, palette, background_level=0.05):
         self.lut = _palette_lut(palette)
-        self.decay = decay
         self.background = self.lut[0] * background_level
         self.trail = np.zeros(n_pixels)
 
@@ -444,43 +475,71 @@ class TriArmGlideEffect:
         starts = np.cumsum([0] + lengths[:-1]).tolist()
         self.arm_ranges = list(zip(starts, lengths))  # (start, length) per arm, in the shared trail array
         self.arm_center_rad = [np.radians(deg) for deg in self.ARM_ANGLES_DEG]
-        self.head_pos = [0.0] * self.ARM_COUNT  # hub-relative sub-pixel distance per arm
-        self._idle_elapsed = [0.0] * self.ARM_COUNT  # seconds since drive last exceeded IDLE_THRESHOLD, per arm
+
+        buffer_len = max(1, int(self.PEAK_WINDOW_SECONDS / self.TICK_SECONDS))
+        self._buffer = collections.deque(maxlen=buffer_len)  # (intensity, angle_rad) samples, rolling
+        self._in_swing = False
+        self._beams = {}  # arm_index -> {"pos", "speed", "width", "brightness"} for each currently-travelling beam
+
+    def _to_index(self, arm_idx: int, dist: int) -> int:
+        """Hub-relative distance along one arm -> real index in the shared trail array."""
+        start, length = self.arm_ranges[arm_idx]
+        return start + (length - 1 - dist) if self.ARM_REVERSED[arm_idx] else start + dist
+
+    def _finalise_swing(self):
+        """Collapse the buffered samples from the swing that just ended into
+        one (direction, speed) pair and spawn a beam on every arm that's
+        actually aligned with it - see the class docstring's SWING
+        DETECTION / BEAM RENDERING sections for the reasoning."""
+        if not self._buffer:
+            return
+        top = sorted(self._buffer, key=lambda sample: sample[0], reverse=True)[:self.TOP_K_SAMPLES]
+        speed = sum(sample[0] for sample in top) / len(top)
+        sin_sum = sum(sample[0] * np.sin(sample[1]) for sample in top)
+        cos_sum = sum(sample[0] * np.cos(sample[1]) for sample in top)
+        mean_angle_rad = np.arctan2(sin_sum, cos_sum)
+
+        for k in range(self.ARM_COUNT):
+            _, length = self.arm_ranges[k]
+            if length == 0:
+                continue
+            weight = max(0.0, np.cos(mean_angle_rad - self.arm_center_rad[k]))
+            if weight < self.MIN_ARM_WEIGHT:
+                continue
+            driven = speed * weight
+            self._beams[k] = {
+                "pos": 0.0,
+                "speed": driven,
+                "width": self.BEAM_WIDTH_MIN_PX + (self.BEAM_WIDTH_MAX_PX - self.BEAM_WIDTH_MIN_PX) * driven,
+                "brightness": scaled(driven, 0.3, 1.0),
+            }
 
     def step(self, intensity: float = 0.0, angle: float = 0.0):
         intensity = min(max(intensity, 0.0), 1.0)
         angle = min(max(angle, 0.0), 1.0)
         angle_rad = angle * 2 * np.pi
+        self._buffer.append((intensity, angle_rad))
 
-        self.trail *= self.decay
+        if not self._in_swing and intensity > self.SWING_START_THRESHOLD:
+            self._in_swing = True
+        elif self._in_swing and intensity < self.SWING_END_THRESHOLD:
+            self._in_swing = False
+            self._finalise_swing()
+            self._buffer.clear()  # next swing's peak window starts clean, not mixed with this one's tail
 
-        for k in range(self.ARM_COUNT):
-            start, length = self.arm_ranges[k]
-            if length == 0:
+        self.trail *= self.BEAM_DECAY
+        for k in list(self._beams.keys()):
+            _, length = self.arm_ranges[k]
+            beam = self._beams[k]
+            beam["pos"] += beam["speed"] * self.BEAM_SPEED_SCALE
+            if beam["pos"] >= length - 1:
+                del self._beams[k]  # reached the tip - done
                 continue
-
-            weight = max(0.0, np.cos(angle_rad - self.arm_center_rad[k]))
-            drive = weight * intensity
-
-            if drive > self.IDLE_THRESHOLD:
-                self._idle_elapsed[k] = 0.0
-                self.head_pos[k] = min(length - 1, self.head_pos[k] + self.GLIDE_SPEED * intensity)
-                dist0 = int(np.floor(self.head_pos[k]))
-                dist1 = min(length - 1, dist0 + 1)
-                frac = self.head_pos[k] - dist0
-
-                # hub-relative distance -> real index in the shared trail array
-                to_index = (lambda d: start + (length - 1 - d)) if self.ARM_REVERSED[k] else (lambda d: start + d)
-                head_strength = scaled(drive, 0.2, 1.0)
-                self.trail[to_index(dist0)] = max(self.trail[to_index(dist0)], (1 - frac) * head_strength)
-                self.trail[to_index(dist1)] = max(self.trail[to_index(dist1)], frac * head_strength)
-            else:
-                # Hold position through a brief dip (mid-shake oscillation) -
-                # only reset to the hub once the dip's persisted a real
-                # while, see IDLE_RESET_SECONDS/docstring.
-                self._idle_elapsed[k] += self.TICK_SECONDS
-                if self._idle_elapsed[k] >= self.IDLE_RESET_SECONDS:
-                    self.head_pos[k] = 0.0  # next swing toward this arm starts from the hub again
+            lo = max(0, int(beam["pos"] - beam["width"] / 2))
+            hi = min(length - 1, int(beam["pos"] + beam["width"] / 2))
+            for dist in range(lo, hi + 1):
+                idx = self._to_index(k, dist)
+                self.trail[idx] = max(self.trail[idx], beam["brightness"])
 
         frame = np.tile(self.background, (len(self.trail), 1))
         for k in range(self.ARM_COUNT):

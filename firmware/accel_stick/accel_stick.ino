@@ -150,20 +150,44 @@ void updateBatteryReading(unsigned long now) {
 // entirely while the display is asleep (section 4) - drawing to a sleeping
 // panel wastes power for nothing visible.
 //
-// Own threshold rather than reusing section 4's IDLE_THRESHOLD - this file's
+// Own thresholds rather than reusing section 4's IDLE_THRESHOLD - this file's
 // top-of-file comment deliberately keeps each of these 4 sections pullable
 // without touching the others, so this stays self-contained even though the
-// two thresholds happen to share the same value today.
+// values happen to be in the same ballpark as section 4's today.
+//
+// Two thresholds with a dead zone between them (hysteresis), not one -
+// a single fixed cutoff checked fresh every ~50ms frame means any tiny
+// jitter straddling that one line (an ordinary hand tremor while just
+// holding it, not an actual swing) flips the text on/off every frame,
+// which reads as the screen glitching (real complaint, 2026-08-17: "a
+// tiny little movement is sometimes detected as moving"). Requiring a
+// clearly-bigger acceleration to dismiss it than to bring it back means a
+// borderline reading just holds whatever state it was already in instead
+// of flapping - same "don't snap-react to one borderline reading" idea as
+// the arm-glide effect's IDLE_RESET_SECONDS on the Pi side. Untuned
+// placeholders like every other threshold in this file (see class-level
+// SENSITIVITY comment) - raise SWING_INVITE_HIDE_ABOVE further if ordinary
+// handling still dismisses it too easily on real hardware.
+static const float SWING_INVITE_SHOW_BELOW = 0.05f;  // calm enough to bring the invite back
+static const float SWING_INVITE_HIDE_ABOVE = 0.15f;  // a real swing, not just jitter - dismisses it
 
-static const float SWING_INVITE_THRESHOLD = 0.05f;
+static bool swing_invite_visible = true;
 
 void updateScreen(float acceleration, bool display_asleep) {
   if (display_asleep) return;
 
+  if (acceleration > SWING_INVITE_HIDE_ABOVE) {
+    swing_invite_visible = false;
+  } else if (acceleration < SWING_INVITE_SHOW_BELOW) {
+    swing_invite_visible = true;
+  }
+  // else: acceleration is in the dead zone between the two thresholds -
+  // leave swing_invite_visible exactly as it was, on purpose.
+
   auto &dsp = M5.Display;
   dsp.startWrite();
   dsp.fillScreen(TFT_BLACK);
-  if (acceleration < SWING_INVITE_THRESHOLD) {
+  if (swing_invite_visible) {
     // setTextDatum(middle_center) + drawString at the screen's centre point
     // is the standard LovyanGFX/M5GFX centred-text pattern - not compile-
     // verified against this board's exact library version yet, check this
