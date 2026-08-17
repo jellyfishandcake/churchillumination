@@ -760,11 +760,20 @@ class HeartRateEffect:
     def _chime_frame(self):
         # Two flashes across CHIME_SECONDS - a deliberately different
         # rhythm from the smooth BPM sine so it reads as a distinct "chime"
-        # cue, not just another heartbeat.
+        # cue, not just another heartbeat. Now scaled by MAX_BRIGHTNESS
+        # (2026-08-18 - was full uncapped 255,255,255, an oversight from
+        # when MAX_BRIGHTNESS was added elsewhere in this class but not
+        # here) - the chime was consistently, reproducibly brighter than
+        # the rest of the effect every single time it fired, which is also
+        # where a real hardware white-balance skew (many cheap addressable
+        # RGB LEDs render full-strength white with a visible blue tint,
+        # since the blue die is typically more efficient than red/green at
+        # matched signal levels) would be most visible - full brightness is
+        # exactly where that skew shows up strongest.
         quarter = self.CHIME_SECONDS / 4
         flash_on = (self._chime_elapsed % (2 * quarter)) < quarter
         level = 1.0 if flash_on else 0.0
-        return np.tile(np.array([255.0, 255.0, 255.0]) * level, (self.n, 1))
+        return np.tile(np.array([255.0, 255.0, 255.0]) * level * self.MAX_BRIGHTNESS, (self.n, 1))
 
     def step(self, intensity: float = 0.0, bpm: float = 0.5):
         # Advanced unconditionally, every tick, regardless of phase - a
