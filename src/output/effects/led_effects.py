@@ -675,34 +675,43 @@ class HeartRateEffect:
     BPM_RANGE = (40.0, 180.0)  # must match config.yaml's heart_rate zone bpm {min, max}
     IDLE_FALLBACK_BPM = 70.0  # shown at rest before any reading's ever completed
 
-    # Fraction of the palette gradient the idle pulse's hue drifts across -
-    # narrow, not the full 0..1 range (was a plain `int(level *
-    # (len(lut)-1))` full-range index until 2026-08-17) - a heartbeat's
-    # rhythmic pulse swings `level` from idle_level up toward ~1.0 and back
-    # every single beat, well under a second at a typical resting BPM, so
-    # indexing the *whole* palette with it made the displayed hue sweep
-    # across the entire gradient every beat - looked like glitchy/random
-    # colour transitions on real hardware, not a clean pulse. This range
-    # keeps some genuine hue variation (per user request 2026-08-17: "I
-    # still want variation of hue based on palettes") while staying inside
-    # each palette's more saturated middle band - avoids both extremes
-    # (most of these palettes start near-black and several, e.g.
-    # festive/winter, end in near-white, either of which read as washed-out
-    # or as barely-distinguishable from the `reading` phase's genuine
-    # white). Widen for more hue movement, narrow further for steadier
-    # colour.
-    HUE_RANGE = (0.4, 0.7)
-    # Ceiling on the pulse's peak brightness, applied after HUE_RANGE - not
-    # 1.0 on purpose (per user request 2026-08-17: the un-capped version
-    # read as "very bright"/distracting up close). Applies to the white
-    # `reading` phase too, dimmed but still clearly distinct from the
-    # idle phase's colour.
+    # How long one full drift across the *entire* palette takes, in the
+    # idle phase - deliberately a totally separate clock from the
+    # heartbeat (see HUE_RANGE's replacement here, 2026-08-17 v2): the
+    # original bug was indexing the whole palette with the beat's own
+    # brightness envelope, so hue swept end to end on every single beat -
+    # looked glitchy. Narrowing to one fixed hue band (2026-08-17 v1) fixed
+    # the glitch but killed the "explore the palette" feeling entirely -
+    # per user follow-up: "I still want a palette inspiration colour and
+    # maybe it pulses and gradually changes throughout the palette
+    # spectrum". This is that: hue now drifts across the full gradient on
+    # its own slow independent timer (`self.hue_phase`, advanced once per
+    # tick regardless of pulse state), while `level` (the fast, beat-
+    # synced envelope) only ever controls brightness. Slow enough that
+    # motion is never abrupt, fast enough to actually notice over a
+    # minute or so of watching - retune per palette/taste.
+    HUE_CYCLE_SECONDS = 45.0
+    # Ceiling on the pulse's peak brightness - not 1.0 on purpose (per user
+    # request 2026-08-17: the un-capped version read as "very
+    # bright"/distracting up close). Applies to the white `reading` phase
+    # too, dimmed but still clearly distinct from the idle phase's colour.
     MAX_BRIGHTNESS = 0.6
 
-    def __init__(self, n_pixels, palette, idle_level=0.15, ease=0.15, decay_rate=3.5):
+    def __init__(self, n_pixels, palette, idle_level=0.15, ease=0.7, decay_rate=3.5):
         self.n = n_pixels
         self.lut = _palette_lut(palette)
         self.idle_level = idle_level
+        # Raised from 0.15 (2026-08-17 v3) - `level` is what actually
+        # reaches the display, but at 0.15 it only tracks 15% of the way
+        # toward `target` each tick, and target's own oscillation (1.0 down
+        # to idle_level every single beat) happens on roughly the same
+        # timescale as that catch-up - so most of the swing got smoothed
+        # away before it ever showed up, leaving a barely-there ~9-17
+        # brightness ripple (out of a possible ~150) that read as no
+        # perceptible rhythm at all. 0.7 lets level track target closely
+        # enough that the beat is clearly recognisable while decay_rate
+        # (below) still keeps each individual pulse's shape gentle rather
+        # than a sharp snap.
         self.ease = ease
         # Lower than a sharp cardiac-monitor-style blip (was 6.0 until
         # 2026-08-17) - a smaller decay_rate stretches the bright phase of
@@ -713,6 +722,7 @@ class HeartRateEffect:
         self.decay_rate = decay_rate
         self.level = idle_level
         self.phase = 0.0
+        self.hue_phase = 0.0  # 0..1, own slow independent clock - see HUE_CYCLE_SECONDS
         self.history = collections.deque(maxlen=self.HISTORY_SIZE)
         self._was_engaged = False
         self._chime_elapsed = 0.0
@@ -721,18 +731,20 @@ class HeartRateEffect:
         self._state = "idle"
 
     def _color_at_level(self, level: float, white: bool = False):
-        """`level` (0..1, the pulse's current brightness envelope) picks a
-        hue within HUE_RANGE and scales it by MAX_BRIGHTNESS - see both
-        constants' own comments for why neither is the full 0..1 range.
-        white=True (the `reading` phase) now genuinely brightness-pulses
-        too, rather than statically ignoring `level` and always returning
-        solid white regardless of pulse phase."""
+        """`level` (0..1, the pulse's current fast brightness envelope)
+        only ever scales brightness now. Hue - for the non-white idle
+        phase - comes from `self.hue_phase` instead, a separate slow clock
+        advanced once per tick in step() (see HUE_CYCLE_SECONDS), so
+        colour drifts gradually across the whole palette independently of
+        the heartbeat's own rhythm. white=True (the `reading` phase)
+        genuinely brightness-pulses too, rather than statically ignoring
+        `level` and always returning solid white regardless of pulse
+        phase."""
         level = min(max(level, 0.0), 1.0)
         if white:
             base = np.array([255.0, 255.0, 255.0])
         else:
-            lo, hi = self.HUE_RANGE
-            idx = int((lo + (hi - lo) * level) * (len(self.lut) - 1))
+            idx = int(self.hue_phase * (len(self.lut) - 1))
             base = self.lut[idx].astype(float)
         return base * level * self.MAX_BRIGHTNESS
 
@@ -755,6 +767,11 @@ class HeartRateEffect:
         return np.tile(np.array([255.0, 255.0, 255.0]) * level, (self.n, 1))
 
     def step(self, intensity: float = 0.0, bpm: float = 0.5):
+        # Advanced unconditionally, every tick, regardless of phase - a
+        # clock fully independent of the heartbeat/state machine below, see
+        # HUE_CYCLE_SECONDS's comment.
+        self.hue_phase = (self.hue_phase + self.TICK_SECONDS / self.HUE_CYCLE_SECONDS) % 1.0
+
         engaged = intensity > 0.5
         rising_edge = engaged and not self._was_engaged
         self._was_engaged = engaged

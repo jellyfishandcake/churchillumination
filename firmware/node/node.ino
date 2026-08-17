@@ -59,7 +59,7 @@ static const uint16_t MQTT_BROKER_PORT = 1883;
 
 // Must be one of config.yaml's sensors.nodes.node_ids ("node1"/"node2" by
 // default - see config.py's DEFAULTS). Change and re-flash for the 2nd board.
-static const char *NODE_ID = "node2";
+static const char *NODE_ID = "node1";
 
 static const char *TOPIC_PREFIX = "esp32";
 static const unsigned long PUBLISH_INTERVAL_MS = 200;  // 5Hz - plenty for ambient sensing, keeps WiFi/MQTT traffic light
@@ -186,14 +186,20 @@ float readLoudness() {
 // for why this replaced the OV2640 RGB approach entirely.
 //
 // I2C address note: the Seeed_AMG8833 library's own AMG8833() constructor
-// defaults to 0x68 (its DEFAULT_IIC_ADDR) - but the Grove AMG8833 board's
-// actual out-of-box default is 0x69 (0x68 only applies if you've soldered
-// the board's own "Addr" jumper, per Seeed's wiki). Passed explicitly below
-// rather than trusting the library's default - a wrong hardcoded I2C
-// address has bitten this project before (the MAX30102 heart-rate sensor,
-// see src/sensing/heart_rate.py).
+// defaults to 0x68 (its DEFAULT_IIC_ADDR) - Seeed's wiki claims the Grove
+// board's out-of-box default is 0x69 instead (0x68 only if the board's own
+// "Addr" jumper is soldered), but this specific node1 board's own I2C
+// scanner (setup()'s bus scan) found it live at 0x68, confirmed 2026-08-18
+// - "init failed" before this fix was exactly that mismatch, wiring was
+// always fine. Passed explicitly rather than trusting either the wiki or
+// the library default blindly - a wrong hardcoded I2C address has bitten
+// this project before (the MAX30102 heart-rate sensor, see
+// src/sensing/heart_rate.py). If node2's own board scans differently, its
+// flash needs this constant changed to match - Seeed's stated default
+// evidently isn't reliable across individual boards/batches, don't assume
+// the two nodes necessarily match each other.
 
-static const uint8_t THERMAL_I2C_ADDR = 0x69;
+static const uint8_t THERMAL_I2C_ADDR = 0x68;
 // Placeholder - tune once this board is actually observed, same as every
 // other sensitivity constant in this file. Starting from motion.py's own
 // MotionSensor default since both operate on the same "mean pixel-to-pixel
