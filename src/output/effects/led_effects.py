@@ -170,6 +170,24 @@ class AudioReactiveWaveEffect:
     one end of the gradient."""
 
     TICK_SECONDS = 0.05
+    # How much motion speeds up the underlying noise field's drift - widened
+    # 2026-08-17 (was 0.8-2.0, a bare 2.5x range on top of an already-slow
+    # base drift - too subtle to actually notice, per user complaint "you
+    # can't see wave speed"). Still not the main way motion reads now - see
+    # CREST_AMOUNT_RANGE below for the more visible part of that fix.
+    SPEED_SCALE_RANGE = (0.5, 4.0)
+    # A real travelling crest layered on top of the noise field - sine, not
+    # noise, deliberately (an exception to this file's own "avoid
+    # mechanical sine waves" philosophy, see its header docstring) because
+    # the whole point is a band that visibly *sweeps* across the strip, not
+    # another organic drift indistinguishable from the base layer. Its
+    # amount is gated by motion (near-zero at rest, so it doesn't sit there
+    # looping and reading as mechanical when nobody's around) rather than
+    # constant, which is what keeps it from fighting that philosophy in
+    # practice - it's a transient accent, not the resting state.
+    CREST_WAVENUMBER_SCALE = 2.5   # spatial frequency relative to the base noise's own `scale` - higher = tighter, more distinct bands
+    CREST_SPEED_SCALE = 6.0        # how much faster the crest travels than the base noise drift, at the same motion-driven speed_scale
+    CREST_AMOUNT_RANGE = (0.0, 0.9)  # invisible at rest -> a prominent bright band at full motion
 
     def __init__(self, n_pixels, palette, seed=0, speed=0.03, scale=None, highlight=True,
                  ceiling_floor=0.15, ceiling_decay_per_second=0.02, noise_spread=0.3):
@@ -186,7 +204,8 @@ class AudioReactiveWaveEffect:
         self._ceiling_decay_per_second = ceiling_decay_per_second
 
     def step(self, loudness: float = 0.0, motion: float = 0.0, env_brightness: float = 0.5, ripple: float = 0.0):
-        speed_scale = scaled(motion, 0.8, 2.0)
+        motion = min(max(motion, 0.0), 1.0)
+        speed_scale = scaled(motion, *self.SPEED_SCALE_RANGE)
         brightness_scale = scaled(env_brightness, 0.5, 1.0)  # never fully dark - this is ambient decor, not a screen
 
         # Self-calibrating ceiling: expands instantly on a new peak (so one
@@ -219,6 +238,18 @@ class AudioReactiveWaveEffect:
         if self.highlight:
             agreement = np.clip(layer1 * layer2, 0, None)
             frame = np.clip(frame + (agreement * 70)[:, None], 0, 255)
+
+        # Travelling crest - see CREST_* constants' comments for why this
+        # is sine rather than noise, and why it's motion-gated rather than
+        # constant. A moving bright band sweeping along the strip, visible
+        # and clearly directional even at a glance, unlike the noise
+        # field's speed_scale alone.
+        crest_amount = scaled(motion, *self.CREST_AMOUNT_RANGE)
+        if crest_amount > 0:
+            crest_phase = x * self.scale * self.CREST_WAVENUMBER_SCALE - self.t * self.CREST_SPEED_SCALE
+            crest = 0.5 + 0.5 * np.sin(crest_phase)  # 0..1 travelling band
+            frame = np.clip(frame + (crest * crest_amount * 100)[:, None], 0, 255)
+
         frame = np.clip(frame * brightness_scale, 0, 255)
 
         if ripple > 0:
@@ -644,11 +675,41 @@ class HeartRateEffect:
     BPM_RANGE = (40.0, 180.0)  # must match config.yaml's heart_rate zone bpm {min, max}
     IDLE_FALLBACK_BPM = 70.0  # shown at rest before any reading's ever completed
 
-    def __init__(self, n_pixels, palette, idle_level=0.15, ease=0.15, decay_rate=6.0):
+    # Fraction of the palette gradient the idle pulse's hue drifts across -
+    # narrow, not the full 0..1 range (was a plain `int(level *
+    # (len(lut)-1))` full-range index until 2026-08-17) - a heartbeat's
+    # rhythmic pulse swings `level` from idle_level up toward ~1.0 and back
+    # every single beat, well under a second at a typical resting BPM, so
+    # indexing the *whole* palette with it made the displayed hue sweep
+    # across the entire gradient every beat - looked like glitchy/random
+    # colour transitions on real hardware, not a clean pulse. This range
+    # keeps some genuine hue variation (per user request 2026-08-17: "I
+    # still want variation of hue based on palettes") while staying inside
+    # each palette's more saturated middle band - avoids both extremes
+    # (most of these palettes start near-black and several, e.g.
+    # festive/winter, end in near-white, either of which read as washed-out
+    # or as barely-distinguishable from the `reading` phase's genuine
+    # white). Widen for more hue movement, narrow further for steadier
+    # colour.
+    HUE_RANGE = (0.4, 0.7)
+    # Ceiling on the pulse's peak brightness, applied after HUE_RANGE - not
+    # 1.0 on purpose (per user request 2026-08-17: the un-capped version
+    # read as "very bright"/distracting up close). Applies to the white
+    # `reading` phase too, dimmed but still clearly distinct from the
+    # idle phase's colour.
+    MAX_BRIGHTNESS = 0.6
+
+    def __init__(self, n_pixels, palette, idle_level=0.15, ease=0.15, decay_rate=3.5):
         self.n = n_pixels
         self.lut = _palette_lut(palette)
         self.idle_level = idle_level
         self.ease = ease
+        # Lower than a sharp cardiac-monitor-style blip (was 6.0 until
+        # 2026-08-17) - a smaller decay_rate stretches the bright phase of
+        # each beat out over more of its cycle instead of flashing and
+        # snapping straight back down, reading as a gentle breathing glow
+        # rather than a sharp, distracting flash. See step()'s docstring
+        # for the exp(-phase * decay_rate) shape this controls.
         self.decay_rate = decay_rate
         self.level = idle_level
         self.phase = 0.0
@@ -660,10 +721,20 @@ class HeartRateEffect:
         self._state = "idle"
 
     def _color_at_level(self, level: float, white: bool = False):
+        """`level` (0..1, the pulse's current brightness envelope) picks a
+        hue within HUE_RANGE and scales it by MAX_BRIGHTNESS - see both
+        constants' own comments for why neither is the full 0..1 range.
+        white=True (the `reading` phase) now genuinely brightness-pulses
+        too, rather than statically ignoring `level` and always returning
+        solid white regardless of pulse phase."""
+        level = min(max(level, 0.0), 1.0)
         if white:
-            return np.array([255.0, 255.0, 255.0])
-        index = int(min(max(level, 0.0), 1.0) * (len(self.lut) - 1))
-        return self.lut[index].astype(float)
+            base = np.array([255.0, 255.0, 255.0])
+        else:
+            lo, hi = self.HUE_RANGE
+            idx = int((lo + (hi - lo) * level) * (len(self.lut) - 1))
+            base = self.lut[idx].astype(float)
+        return base * level * self.MAX_BRIGHTNESS
 
     def _pulse_frame(self, real_bpm: float, white: bool):
         beat_period = 60.0 / real_bpm
@@ -797,6 +868,24 @@ class TempHumidityBarEffect:
     HUMIDITY_RANGE = (20.0, 70.0)     # must match config's temp_humidity zone humidity {min, max}
     CONDITION_ORDER = ("clear", "cloudy", "fog", "rain", "snow", "storm")  # must match weather.py's _CONDITION_ORDER - index is what `condition` and each history entry's condition_code encode
     CONDITION_FLAT_BRIGHTNESS = (1.0, 0.75, 0.65, 0.85, 0.95, 0.8)  # per-CONDITION_ORDER-index flat multiplier used by replay's revealed segments (no animated texture there - see docstring)
+    # Fixed, distinct colour per condition, same order as CONDITION_ORDER -
+    # added 2026-08-17 so "what's the weather" reads as an immediate colour
+    # identity at a glance, rather than being folded into the same hue
+    # temperature was already using (the old design picked colour from
+    # *temperature*, condition only added a subtle brightness texture - two
+    # different things both landing in "colour-ish" territory read as
+    # muddled/hard to parse, per user feedback: "we can't see or understand
+    # what's happening"). Untuned placeholders, same as every other colour
+    # choice in this file - adjust if any pair reads as too similar in
+    # person.
+    CONDITION_COLOURS = {
+        "clear": (255, 200, 80),
+        "cloudy": (140, 150, 160),
+        "fog": (200, 200, 200),
+        "rain": (70, 130, 220),
+        "snow": (215, 235, 245),
+        "storm": (95, 60, 140),
+    }
     REPLAY_INTERVAL_SECONDS = 180.0  # time spent in live mode between replays while activated - 3 minutes
     REPLAY_DURATION_SECONDS = 60.0   # how long one full past-24h reveal takes
 
@@ -829,19 +918,52 @@ class TempHumidityBarEffect:
             return np.full(self.n, 0.7)
         return np.ones(self.n)  # clear
 
-    def _live_frame(self, temperature: float, humidity: float, activity: float, contrast: float, condition_idx: int):
-        t = min(max(temperature, 0.0), 1.0)
-        exaggerated_t = min(max(t + (t - 0.5) * contrast, 0.0), 1.0)
-        color = self.lut[int(exaggerated_t * (len(self.lut) - 1))].astype(float)
-        brightness = 0.3 + 0.7 * min(max(humidity, 0.0), 1.0)
+    # Width (in segments) and minimum visibility of the indoor-temperature
+    # marker in _live_frame - see that method's docstring. Untuned, same
+    # "feel not physics" caveat as everything else here.
+    MARKER_WIDTH_SEGMENTS = 2.5
+    MARKER_PROMINENCE_RANGE = (0.3, 1.0)  # always at least somewhat visible even at contrast=0, brighter as indoor/outdoor diverge more
 
+    def _live_frame(self, temperature: float, humidity: float, activity: float, contrast: float, condition_idx: int):
+        """Redesigned 2026-08-17 into three separated, individually legible
+        channels (was one hue picked from *temperature*, with condition only
+        adding a subtle brightness texture - two different things both
+        landing in "which colour is this" territory read as muddled, per
+        user feedback: "we can't see or understand what's happening"):
+
+        1. COLOUR = a fixed, distinct colour per weather condition (see
+           CONDITION_COLOURS) - "what's the weather" reads at a glance,
+           consistent moment to moment rather than drifting with indoor
+           temperature too.
+        2. SHIMMER = the same per-condition animated texture as before
+           (_condition_texture - rain/storm flicker, snow sparkles,
+           cloudy/fog sit flat) layered on top as a brightness multiplier,
+           plus `activity`'s own subtle noise-driven variation.
+        3. MOVEMENT = a soft white marker sliding along the bar toward
+           whichever end represents the current indoor temperature - "the
+           room vs the world" is now a literal moving position instead of
+           a colour shift, and `contrast` (how far indoor's diverged from
+           outdoor) controls how prominent that marker is, rather than
+           pushing the base hue toward an extreme."""
         x = np.arange(self.n)
+        condition_name = self.CONDITION_ORDER[condition_idx]
+        base_color = np.array(self.CONDITION_COLOURS[condition_name], dtype=float)
+
+        brightness = 0.3 + 0.7 * min(max(humidity, 0.0), 1.0)
         shimmer = value_noise(x * 0.15, np.full(self.n, self.t))  # roughly -1..1 per segment
         shimmer_amount = 0.25 * activity  # calm: ~0, bar reads flat; lively: visible variation
         texture = self._condition_texture(condition_idx)
 
         pixel_brightness = brightness * texture * (1.0 + shimmer * shimmer_amount)
-        frame = color[None, :] * pixel_brightness[:, None]
+        frame = base_color[None, :] * pixel_brightness[:, None]
+
+        t = min(max(temperature, 0.0), 1.0)
+        marker_pos = t * (self.n - 1)
+        marker_shape = np.clip(1.0 - np.abs(x - marker_pos) / self.MARKER_WIDTH_SEGMENTS, 0.0, 1.0)
+        marker_prominence = scaled(min(max(contrast, 0.0), 1.0), *self.MARKER_PROMINENCE_RANGE)
+        marker_color = np.array([255.0, 255.0, 255.0])
+        frame = frame + (marker_color[None, :] - frame) * (marker_shape * marker_prominence)[:, None]
+
         return np.clip(frame, 0, 255).astype(np.uint8)
 
     def _replay_frame(self, history: list):

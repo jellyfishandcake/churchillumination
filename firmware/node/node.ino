@@ -59,7 +59,7 @@ static const uint16_t MQTT_BROKER_PORT = 1883;
 
 // Must be one of config.yaml's sensors.nodes.node_ids ("node1"/"node2" by
 // default - see config.py's DEFAULTS). Change and re-flash for the 2nd board.
-static const char *NODE_ID = "node1";
+static const char *NODE_ID = "node2";
 
 static const char *TOPIC_PREFIX = "esp32";
 static const unsigned long PUBLISH_INTERVAL_MS = 200;  // 5Hz - plenty for ambient sensing, keeps WiFi/MQTT traffic light
