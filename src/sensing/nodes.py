@@ -47,13 +47,27 @@ class NodeSensor(Sensor):
         if mqtt is not None:
             try:
                 client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+                client.on_connect = self._on_connect
                 client.on_message = self._on_message
                 client.connect_async(mqtt_host, mqtt_port)
-                client.subscribe(f"{TOPIC_PREFIX}/+/sense")
-                client.loop_start()  # non-blocking: connects in a background thread
+                client.loop_start()  # non-blocking: connects (and subscribes, via _on_connect) in a background thread
                 self._client = client
             except Exception:
                 self._client = None  # no broker reachable right now
+
+    def _on_connect(self, client, userdata, flags, reason_code, properties=None):
+        """Subscribing has to happen here, not right after connect_async()
+        in __init__ - confirmed 2026-08-18 against paho-mqtt's own
+        subscribe() source (`if self._sock is None: return (MQTT_ERR_NO_CONN,
+        None)`): connect_async() only *schedules* the connection, it doesn't
+        establish the socket, so a subscribe() call immediately after it -
+        before loop_start() has even run - silently no-ops every time. This
+        was a real bug: mosquitto_sub against the same broker/topic showed
+        live node data fine, but this class's own read() was always falling
+        through to the mock because it had never actually subscribed to
+        anything. Subscribing in on_connect instead also re-subscribes
+        automatically after any reconnect, not just the first connection."""
+        client.subscribe(f"{TOPIC_PREFIX}/+/sense")
 
     def _on_message(self, client, userdata, msg):
         try:

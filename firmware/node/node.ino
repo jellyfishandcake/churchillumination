@@ -39,6 +39,8 @@
 //   6. For the second node, change NODE_ID to "node2" and re-upload - same
 //      firmware file for both boards.
 
+
+// how to tell apart node1 and node2 for future flashing - node1 is on COM7 and node2 is on COM8
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <ESP_I2S.h>
@@ -59,7 +61,7 @@ static const uint16_t MQTT_BROKER_PORT = 1883;
 
 // Must be one of config.yaml's sensors.nodes.node_ids ("node1"/"node2" by
 // default - see config.py's DEFAULTS). Change and re-flash for the 2nd board.
-static const char *NODE_ID = "node1";
+static const char *NODE_ID = "node2";
 
 static const char *TOPIC_PREFIX = "esp32";
 static const unsigned long PUBLISH_INTERVAL_MS = 200;  // 5Hz - plenty for ambient sensing, keeps WiFi/MQTT traffic light
@@ -200,14 +202,19 @@ float readLoudness() {
 // the two nodes necessarily match each other.
 
 static const uint8_t THERMAL_I2C_ADDR = 0x68;
-// Placeholder - tune once this board is actually observed, same as every
-// other sensitivity constant in this file. Starting from motion.py's own
-// MotionSensor default since both operate on the same "mean pixel-to-pixel
-// change, in degrees C" scale - despite the very different pixel counts
-// (64 here vs 768 centrally), the per-pixel temperature-delta magnitude a
-// moving warm body produces shouldn't differ much, so it's a reasonable
-// starting point rather than an arbitrary guess.
-static const float MOTION_SENSITIVITY = 10.0f;
+// Tuned 2026-08-18 against this specific node1 board's real raw_thermal
+// (watched live over MQTT via `mosquitto_sub -t esp32/+/sense`, see
+// g_raw_thermal below) - the previous 10.0f placeholder (borrowed from
+// motion.py's central MotionSensor default, a guess that idle would read
+// well under 0.1) was wildly too aggressive for this sensor: idle actually
+// sits around raw_thermal 0.2-0.3, real movement 1-4 (peak observed 9),
+// so 10.0f pinned motion at 1.0 even at rest. 0.25f instead puts idle at
+// ~0.05-0.075 (comfortably under PRESENCE_MOTION_THRESHOLD below), real
+// movement at ~0.25-1.0, saturating around raw=4 rather than instantly.
+// Based on a short (~30s) idle sample though - worth a longer soak test
+// before fully trusting the idle ceiling doesn't drift higher over time
+// (AC cycling, sun through a window, etc).
+static const float MOTION_SENSITIVITY = 0.25f;
 
 AMG8833 thermal_sensor(THERMAL_I2C_ADDR);
 static float prev_frame[PIXEL_NUM] = {0};

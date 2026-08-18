@@ -617,7 +617,12 @@ async def main():
     # each opening its own SPI bus/device. See _led_zone_pixel_ranges/
     # output_loop for how each led zone's frame is routed to the right one.
     strips = {
-        name: LEDStrip(num_pixels=cfg["num_pixels"], spi_bus=cfg.get("spi_bus", 0), spi_device=cfg.get("spi_device", 0))
+        name: LEDStrip(
+            num_pixels=cfg["num_pixels"],
+            spi_bus=cfg.get("spi_bus", 0),
+            spi_device=cfg.get("spi_device", 0),
+            **({"spi_speed_hz": cfg["spi_speed_hz"]} if "spi_speed_hz" in cfg else {}),
+        )
         for name, cfg in config["leds"]["strips"].items()
     }
     # Only constructed if a DMX fixture is actually enabled - see

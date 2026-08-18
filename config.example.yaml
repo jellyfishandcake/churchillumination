@@ -38,6 +38,15 @@ leds:
   # picks one via output.strip. accelerometer_strip is on SPI1 (GPIO 20/21,
   # confirmed 2026-08-10) - needs `dtoverlay=spi1-3cs` added to
   # /boot/firmware/config.txt + a reboot before /dev/spidev1.0 exists.
+  # spi_speed_hz is optional per strip, defaults to LEDStrip's own 8MHz if
+  # omitted - override to test a lower clock speed while diagnosing
+  # glitching/off-palette pixels, e.g. heart_rate_strip: {..., spi_speed_hz: 1000000}.
+  # Worth trying first if a strip's data/clock lines run straight off the
+  # Pi's 3.3V GPIO with no level shifter (heart_rate_strip's case, confirmed
+  # 2026-08-18) - 8MHz doesn't leave much margin at 3.3V into a nominally
+  # 5V-logic part, and the same glitch reproduced identically after moving
+  # the same physical strip onto accelerometer_strip's separate SPI1 pins,
+  # which rules out "these specific GPIO pins" as the cause.
   strips:
     heart_rate_strip: {num_pixels: 60, spi_bus: 0, spi_device: 0}
     accelerometer_strip: {num_pixels: 94, spi_bus: 1, spi_device: 0}
@@ -109,16 +118,12 @@ leds:
       # --count 16 the same way.
       output: {type: dmx, start_address: 1, channels: [r, g, b], pixels: 16}
     - name: temp_humidity
-      effect: temp_humidity_bar   # was temp_humidity_matrix on a spatial LED panel idea - physical build settled on a DMX bar instead, see led_effects.py's TempHumidityBarEffect docstring
-      palette: winter
+      effect: temp_humidity_bar   # rebuilt 2026-08-18 into a three-layer ambient/shimmer/touch design, see led_effects.py's TempHumidityBarEffect docstring
+      palette: winter   # unused by this effect (colour comes from CONDITION_COLOURS per condition) - kept because every zone's effect is constructed as effect_class(n_pixels, palette)
       source:
-        temperature: {path: sensors.temperature, min: 15, max: 30}
-        humidity: {path: sensors.humidity, min: 20, max: 70}
-        activity: state.activity_level   # drives a subtle shimmer - see TempHumidityBarEffect's docstring
-        contrast: {path: sensors.indoor_outdoor_temp_diff, min: 0, max: 15}   # indoor/outdoor divergence - see main.py's sensor_loop
+        temperature: {path: sensors.temperature, min: 15, max: 30}   # indoor reading - drives the touch-react rising-edge detector, see TempHumidityBarEffect.TOUCH_TRIGGER_DELTA
+        contrast: {path: sensors.indoor_outdoor_temp_diff, min: 0, max: 15}   # indoor/outdoor divergence, drives the shimmer layer - see main.py's sensor_loop
         condition: {path: sensors.outdoor_condition_code, min: 0, max: 5}   # weather.py's _CONDITION_ORDER index (clear/cloudy/fog/rain/snow/storm) - must match TempHumidityBarEffect.CONDITION_ORDER
-        activated: sensors.activated   # presence (main.py's ActivationTracker) - gates the periodic past-24h replay
-        history: {path: sensors.outdoor_history, raw: true}   # past-24h hourly series, unrescaled - see main.py's _resolve_one_source raw passthrough and TempHumidityBarEffect's replay mode
       # RGBW bar fixture - 4 channels/segment. start_address moved to 49
       # (2026-08-15, the block right after ambient's now-16-segment/48ch
       # span from adding a second bar there) - was 25, confirmed 2026-08-11

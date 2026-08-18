@@ -11,13 +11,12 @@ Every zone (a large ambient bar or a small cutout like heart-rate) picks
 one effect class from the same registry below - just its own palette and
 its own named source(s) (see main.py's led_loop/_resolve_sources). Most
 effects take a single `intensity` kwarg (organic_wave/organic_comet/
-organic_twinkle/reactive_glow); temp_humidity_bar takes
-`temperature`+`humidity`, plus optional `activity` (shimmer) and `contrast`
-(indoor/outdoor divergence), and now also `condition` (weather_code bucket)
-and `activated`+`history` for its periodic past-24h replay (see its own
-docstring - `history` is the one source in this whole registry that isn't a
-plain 0..1 float, since it needs main.py's `{path, raw: true}` passthrough
-instead of the usual rescale); pulse takes `intensity`+`bpm` (bpm times its per-beat
+organic_twinkle/reactive_glow); temp_humidity_bar takes `temperature`
+(indoor reading - also drives its touch-react rising-edge detector),
+`contrast` (indoor/outdoor divergence - drives its shimmer layer) and
+`condition` (weather_code bucket - drives its base colour/character) - see
+its own docstring for the three-layer ambient/shimmer/touch design; pulse
+takes `intensity`+`bpm` (bpm times its per-beat
 flash to the wearer's actual heart rate - see PulseEffect's docstring);
 tri_arm_glide takes `intensity`+`angle` (a swing angle rescaled to 0..1 -
 see TriArmGlideEffect's own docstring); audio_reactive_wave takes
@@ -36,8 +35,8 @@ ReactiveGlowEffect's own docstring for the specific bug this avoids in
 organic_comet's case). temp_humidity_bar is DMX too (as of the weather
 zone's move off the old LED-matrix idea onto a dedicated RGBW bar fixture)
 but isn't a reactive_glow candidate despite that overlap - its source
-shape (`temperature`+`humidity`, not `intensity`) doesn't reduce to a
-plain reactive_glow input regardless of segment count. tri_arm_glide is
+shape (`temperature`+`contrast`+`condition`, not `intensity`) doesn't
+reduce to a plain reactive_glow input regardless of segment count. tri_arm_glide is
 specific to the accelerometer zone's three-armed `led` layout (output.type:
 led, one continuous chain split into three equal-ish spokes) - not meant to
 be picked for an arbitrary zone the way the other effects are.

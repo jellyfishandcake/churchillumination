@@ -31,6 +31,13 @@ DEFAULTS = {
         # confirmed 2026-08-10 as the right pins) needs
         # `dtoverlay=spi1-3cs` added to /boot/firmware/config.txt + a reboot
         # before /dev/spidev1.0 exists - not yet confirmed done.
+        # spi_speed_hz defaults to LEDStrip's own 8_000_000 if omitted here
+        # (see main.py's build_strips) - override per-strip to test a lower
+        # clock speed while diagnosing signal-integrity issues (glitching/
+        # off-palette pixels) without editing source. Worth trying first if
+        # a strip's data/clock lines run straight from the Pi's 3.3V GPIO
+        # with no level shifter, since 8MHz is fast enough to lose margin at
+        # 3.3V into an ostensibly-5V-logic part - see 2026-08-18 debugging.
         "strips": {
             "heart_rate_strip": {"num_pixels": 60, "spi_bus": 0, "spi_device": 0},
             "accelerometer_strip": {"num_pixels": 94, "spi_bus": 1, "spi_device": 0},
@@ -97,7 +104,8 @@ DEFAULTS = {
                 "name": "temp_humidity",
                 # Was temp_humidity_matrix on a spatial LED panel idea - the
                 # physical build settled on a DMX bar instead (RGBW) - see
-                # led_effects.py's TempHumidityBarEffect docstring.
+                # led_effects.py's TempHumidityBarEffect docstring. Rebuilt
+                # 2026-08-18 into a three-layer ambient/shimmer/touch design.
                 # start_address 25 confirmed 2026-08-11 by setting the
                 # fixture's own display to match, same as ambient's address
                 # once was. pixels: 28 is still the original 2026-08-07
@@ -108,14 +116,8 @@ DEFAULTS = {
                 "effect": "temp_humidity_bar", "palette": "winter",
                 "source": {
                     "temperature": {"path": "sensors.temperature", "min": 15, "max": 30},
-                    "humidity": {"path": "sensors.humidity", "min": 20, "max": 70},
-                    # condition/activated/history drive the periodic past-24h
-                    # replay - see TempHumidityBarEffect's docstring. history
-                    # is unrescaled (a list, not a single reading) via the
-                    # raw:true passthrough in _resolve_one_source.
+                    "contrast": {"path": "sensors.indoor_outdoor_temp_diff", "min": 0, "max": 15},
                     "condition": {"path": "sensors.outdoor_condition_code", "min": 0, "max": 5},
-                    "activated": "sensors.activated",
-                    "history": {"path": "sensors.outdoor_history", "raw": True},
                 },
                 "output": {"type": "dmx", "start_address": 25, "channels": ["r", "g", "b", "w"], "pixels": 28},
             },

@@ -8,6 +8,12 @@ and hammering a free public API at 20Hz would be both wasteful and rude.
 read() just returns whatever the last successful fetch cached - same
 "background thread populates, read() returns instantly, never blocks the
 sensor loop on network I/O" pattern as nodes.py's MQTT listener.
+
+Current conditions only (temperature/humidity/condition) - an earlier
+version also pulled a rolling past-24h hourly series for a "replay" LED
+mode that's since been dropped (see led_effects.py's TempHumidityBarEffect,
+rebuilt 2026-08-18); no consumer needs the history anymore, so the request
+stays a plain `current`-only call rather than fetching data nothing reads.
 """
 import random
 import threading
@@ -28,7 +34,7 @@ STALE_AFTER_SECONDS = FETCH_INTERVAL_SECONDS * 3  # tolerate a couple of missed 
 # arrives as this list's index rescaled to 0..1 (see _condition_code below
 # and config.yaml's temp_humidity zone source) - reordering this list
 # without updating led_effects.py's matching CONDITION_ORDER would silently
-# relabel every effect's condition-texture branch.
+# relabel every effect's condition-colour/character branch.
 _CONDITION_BUCKETS = [
     (range(0, 1), "clear"),
     (range(1, 4), "cloudy"),
@@ -39,12 +45,6 @@ _CONDITION_BUCKETS = [
 ]
 _CONDITION_ORDER = [name for _range, name in _CONDITION_BUCKETS]
 _UNKNOWN_CONDITION_INDEX = _CONDITION_ORDER.index("cloudy")  # visually-neutral fallback for an unrecognised WMO code
-
-# Rolling past-24h window for the replay effect - see main.py's
-# TempHumidityBarEffect / config.yaml's temp_humidity zone `history` source.
-# forecast_days=1 keeps the response small (we only use the past_days=1
-# portion) while still giving Open-Meteo's API a valid "hourly" request.
-HISTORY_HOURS = 24
 
 
 def _bucket_condition(code: int) -> str:
@@ -80,37 +80,11 @@ class WeatherSensor(Sensor):
                 "latitude": self.latitude,
                 "longitude": self.longitude,
                 "current": "temperature_2m,relative_humidity_2m,weather_code",
-                # Same request also pulls the past-24h hourly series for the
-                # replay effect - one extra param set, not a second HTTP
-                # round-trip. forecast_days=1 (Open-Meteo's minimum) keeps
-                # the payload small; only the past_days=1 portion is used.
-                "hourly": "temperature_2m,relative_humidity_2m,weather_code",
-                "past_days": 1,
-                "forecast_days": 1,
             },
             timeout=REQUEST_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
-        payload = response.json()
-        current = payload["current"]
-        hourly = payload["hourly"]
-
-        # hourly.time is chronological; slice the HISTORY_HOURS entries
-        # ending at "now"'s slot for a rolling past-24h window (rather than
-        # a calendar-day slice, which would go stale/short near midnight).
-        try:
-            now_idx = hourly["time"].index(current["time"])
-        except ValueError:
-            now_idx = len(hourly["time"]) - 1  # fall back to the latest hour Open-Meteo actually returned
-        start_idx = max(0, now_idx - (HISTORY_HOURS - 1))
-        history = [
-            {
-                "temperature": float(hourly["temperature_2m"][i]),
-                "humidity": float(hourly["relative_humidity_2m"][i]),
-                "condition_code": _condition_code(_bucket_condition(int(hourly["weather_code"][i]))),
-            }
-            for i in range(start_idx, now_idx + 1)
-        ]
+        current = response.json()["current"]
 
         condition_name = _bucket_condition(int(current["weather_code"]))
         return {
@@ -118,7 +92,6 @@ class WeatherSensor(Sensor):
             "outdoor_humidity": float(current["relative_humidity_2m"]),
             "outdoor_condition": condition_name,
             "outdoor_condition_code": _condition_code(condition_name),
-            "outdoor_history": history,  # oldest -> newest, see TempHumidityBarEffect
         }
 
     def _poll_loop(self) -> None:
@@ -150,16 +123,4 @@ def _mock_reading() -> dict:
         "outdoor_humidity": random.uniform(30.0, 90.0),
         "outdoor_condition": condition_name,
         "outdoor_condition_code": _condition_code(condition_name),
-        # Fabricated but shaped like a real HISTORY_HOURS reading, so
-        # TempHumidityBarEffect's replay has something to animate on a dev
-        # laptop / while the real fetch is unreachable, same "safe on a dev
-        # laptop" contract every sensor here follows.
-        "outdoor_history": [
-            {
-                "temperature": random.uniform(5.0, 25.0),
-                "humidity": random.uniform(30.0, 90.0),
-                "condition_code": _condition_code(random.choice(["clear", "cloudy", "rain"])),
-            }
-            for _ in range(HISTORY_HOURS)
-        ],
     }
