@@ -390,43 +390,62 @@ class TriArmGlideEffect:
     `angle` arrives pre-rescaled to 0..1 by main.py's _resolve_one_source
     (the zone's source config supplies {min: 0, max: 360} - see config.py)
     and is converted back to radians here. `intensity` is the shake's
-    magnitude, same signal DirectionalWaveEffect used.
+    magnitude, same signal DirectionalWaveEffect used. See
+    accel_stick.ino's readAcceleration() for what angle_deg actually is:
+    atan2(ay, ax) of the board's own local X/Y axes ONLY - Z (roughly
+    gravity-aligned when the stick is held upright) is deliberately
+    excluded, on the assumption the stick is held pointing up/down and
+    swung side-to-side/forward-back, not held flat. A horizontal swing
+    while the board itself isn't held upright doesn't show up correctly in
+    X/Y - if a swing's landing on the wrong arm consistently (not just
+    noisy/random), that's the first thing to check, not this effect's own
+    angle-to-arm mapping.
 
-    REDESIGNED 2026-08-17 from a continuous per-tick reactive glide (every
-    tick's raw intensity/angle immediately nudged a head further along
-    whichever arm(s) it aligned with, no notion of "a swing" as a discrete
-    thing) to a discrete swing-detect-then-fire-a-beam model instead: real
-    handheld shakes are noisy tick to tick, so reacting to every instant
-    made the response feel twitchy/glitchy rather than deliberate.
+    REDESIGNED 2026-08-17 from a continuous per-tick reactive glide into a
+    swing-detect-then-fire-a-beam model with hysteresis + a buffered,
+    averaged direction - real handheld shakes are noisy tick to tick, so
+    reacting to every instant made the response feel twitchy/glitchy.
+    REDESIGNED AGAIN 2026-08-18, same day it was first confirmed on real
+    hardware: that version only fired once a swing fully *ended* (intensity
+    dropping back below a second, lower threshold) - reported back as "it
+    slowly started having lights after I stopped", i.e. the reaction was
+    delayed until the motion completely settled, and the beam speed itself
+    read as "a snail climbing the arm" rather than the "quick little thing"
+    that gives an instantaneous-feeling interaction. Per that feedback, the
+    whole buffer-and-wait-for-settle mechanism is gone:
 
-    SWING DETECTION: `intensity` is watched with hysteresis (two
-    thresholds, not one - same "a single fixed cutoff flickers on
-    borderline readings" reasoning as accel_stick.ino's SWING_INVITE
-    thresholds) - crossing above SWING_START_THRESHOLD marks a swing as
-    "in progress" and starts buffering every (intensity, angle) sample;
-    crossing back below the lower SWING_END_THRESHOLD marks it finished.
-    At that point, the buffer's TOP_K_SAMPLES highest-intensity readings -
-    the actual peak of the swing, not its noisy ramp-up/ramp-down - get
-    collapsed into one clean (direction, speed) pair: speed is their plain
-    mean; direction is a *circular* mean (averaging each sample's unit
-    vector, intensity-weighted, then atan2 back), since a plain average of
-    angles breaks near the 0/360 wraparound (e.g. averaging 350 degrees and
-    10 degrees directly gives 180 - exactly backwards - instead of the
-    correct 0). That one summarised reading, not the raw stream, is what
-    drives the light.
+    INSTANT TRIGGER: a single threshold (SWING_TRIGGER_THRESHOLD) - the
+    moment `intensity` crosses it, a beam fires immediately using THAT
+    tick's own (intensity, angle), no waiting, no averaging a window of
+    samples. SWING_COOLDOWN_SECONDS is the only thing standing between one
+    trigger and the next - short enough (0.12s) that genuinely separate
+    quick swings each register on their own, but long enough that one
+    continuous held-above-threshold reading doesn't refire and restart the
+    same beam every single 0.05s tick, which would just read as the arm
+    solidly lit rather than a distinct travelling beam. This is also what
+    gives "shake violently in many directions" its firework quality for
+    free, with no separate "violent" detection needed: each quick
+    direction-change that clears the cooldown is its own independent
+    trigger, on whichever arm(s) that instant's angle aligns with - a
+    single controlled swing reads as one shooting star, a wild multi-
+    directional shake reads as several, potentially on different arms,
+    firing in quick succession.
 
-    BEAM RENDERING: the finalised (direction, speed) spawns one travelling
-    beam per arm whose cosine-weighted alignment to that direction clears
-    MIN_ARM_WEIGHT - same clamped-cosine falloff idea as before (see the
-    dead-zone/overlap caveat below, still just as true here), just used to
-    decide which arm(s) get a beam at all rather than a continuous
-    per-tick weight. Each arm's beam travels hub -> tip at a speed set by
-    (swing speed * that arm's own alignment weight), with brightness and
-    pixel-width scaled the same way - a harder, more on-target swing
-    produces a beam that's faster, brighter, AND wider (more pixels lit at
-    once), not just brighter. Reaching the tip ends that arm's beam. A new
-    swing detected on an arm already mid-beam just replaces it outright,
-    no blending between the two.
+    BEAM RENDERING: the triggering (intensity, angle) spawns one travelling
+    beam per arm whose cosine-weighted alignment to that angle clears
+    MIN_ARM_WEIGHT (see the dead-zone/overlap caveat below, still just as
+    true here). Each arm's beam travels hub -> tip at a speed set by
+    (intensity * that arm's own alignment weight) * BEAM_SPEED_SCALE - the
+    scale itself raised sharply (1.6 -> 7.0) so even a moderate swing
+    crosses the longest arm (36px) in well under half a second, not
+    several seconds; BEAM_DECAY also raised to match (a fast head with a
+    slow-fading trail would just look like the whole arm lighting up solid
+    rather than a distinct streak). Brightness and pixel-width scale the
+    same way a harder, more on-target swing has always produced a beam
+    that's faster, brighter, AND wider, not just brighter. Reaching the tip
+    ends that arm's beam. A new trigger on an arm already mid-beam just
+    replaces it outright, no blending between the two - matches "quick,
+    immediate feedback" better than queuing would.
 
     Each arm claims a smooth ~180-degree-wide slice of the circle centred
     on its own spoke, via a clamped cosine falloff: weight = max(0,
@@ -481,20 +500,26 @@ class TriArmGlideEffect:
     ARM_REVERSED = (False, True, False, True)       # confirmed 2026-08-10 - arms 2 and 4 wired tip-to-hub, see docstring
     TICK_SECONDS = 0.05                    # matches main.py's output_loop's fixed 20Hz - see PulseEffect's own note on this same assumption
 
-    # Swing detection - all untuned placeholders (feel, not physics, same
-    # caveat as accel_stick.ino's SENSITIVITY) - tune against a real swing
-    # once flashed and wired.
-    SWING_START_THRESHOLD = 0.15   # intensity must climb above this to count as a swing beginning
-    SWING_END_THRESHOLD = 0.08     # then drop back below this to finalise it - see step()'s docstring on why two thresholds, not one
-    PEAK_WINDOW_SECONDS = 1.5      # how far back the sample buffer reaches - must comfortably cover one real swing's whole duration
-    TOP_K_SAMPLES = 4              # how many of the buffer's highest-intensity samples define the finished swing's direction/speed
-    MIN_ARM_WEIGHT = 0.15          # below this cosine-alignment to the swing direction, an arm doesn't get a beam at all
+    # Swing detection - untuned placeholders (feel, not physics, same
+    # caveat as accel_stick.ino's SENSITIVITY), but SWING_TRIGGER_THRESHOLD
+    # deliberately matches accel_stick.ino's own SWING_INVITE_HIDE_ABOVE
+    # (0.15) - the firmware's own on-screen UI already treats that as "a
+    # real swing, not just jitter", so there's no reason for this effect to
+    # disagree about what counts as one.
+    SWING_TRIGGER_THRESHOLD = 0.15  # intensity crossing this fires a beam immediately - see class docstring's INSTANT TRIGGER section
+    SWING_COOLDOWN_SECONDS = 0.12   # minimum gap between two triggers - short enough that quick successive swings each register
+    MIN_ARM_WEIGHT = 0.15           # below this cosine-alignment to the swing direction, an arm doesn't get a beam at all
 
-    # Beam rendering - also untuned placeholders.
-    BEAM_SPEED_SCALE = 1.6         # pixels/tick at (swing speed * arm weight) = 1.0
+    # Beam rendering - also untuned placeholders, but deliberately much
+    # faster than the first real-hardware version (BEAM_SPEED_SCALE 1.6,
+    # BEAM_DECAY 0.88) per explicit "too slow, like a snail" feedback -
+    # 7.0/0.7 crosses even the longest arm (36px) in well under half a
+    # second at full strength and leaves a short, fast-fading streak
+    # instead of a slow, long-lingering one.
+    BEAM_SPEED_SCALE = 7.0         # pixels/tick at (intensity * arm weight) = 1.0
     BEAM_WIDTH_MIN_PX = 2          # pixels lit around the beam's leading edge at driven strength -> 0
-    BEAM_WIDTH_MAX_PX = 10         # ... at driven strength -> 1 - "more pixels pack" for a harder/more-aligned swing
-    BEAM_DECAY = 0.88              # per-tick trail fade behind a travelling beam
+    BEAM_WIDTH_MAX_PX = 8          # ... at driven strength -> 1 - "more pixels pack" for a harder/more-aligned swing
+    BEAM_DECAY = 0.7               # per-tick trail fade behind a travelling beam - raised (lowered?) to match the faster beam, see above
 
     def __init__(self, n_pixels, palette, background_level=0.05):
         self.lut = _palette_lut(palette)
@@ -507,9 +532,7 @@ class TriArmGlideEffect:
         self.arm_ranges = list(zip(starts, lengths))  # (start, length) per arm, in the shared trail array
         self.arm_center_rad = [np.radians(deg) for deg in self.ARM_ANGLES_DEG]
 
-        buffer_len = max(1, int(self.PEAK_WINDOW_SECONDS / self.TICK_SECONDS))
-        self._buffer = collections.deque(maxlen=buffer_len)  # (intensity, angle_rad) samples, rolling
-        self._in_swing = False
+        self._cooldown_remaining = 0.0
         self._beams = {}  # arm_index -> {"pos", "speed", "width", "brightness"} for each currently-travelling beam
 
     def _to_index(self, arm_idx: int, dist: int) -> int:
@@ -517,27 +540,18 @@ class TriArmGlideEffect:
         start, length = self.arm_ranges[arm_idx]
         return start + (length - 1 - dist) if self.ARM_REVERSED[arm_idx] else start + dist
 
-    def _finalise_swing(self):
-        """Collapse the buffered samples from the swing that just ended into
-        one (direction, speed) pair and spawn a beam on every arm that's
-        actually aligned with it - see the class docstring's SWING
-        DETECTION / BEAM RENDERING sections for the reasoning."""
-        if not self._buffer:
-            return
-        top = sorted(self._buffer, key=lambda sample: sample[0], reverse=True)[:self.TOP_K_SAMPLES]
-        speed = sum(sample[0] for sample in top) / len(top)
-        sin_sum = sum(sample[0] * np.sin(sample[1]) for sample in top)
-        cos_sum = sum(sample[0] * np.cos(sample[1]) for sample in top)
-        mean_angle_rad = np.arctan2(sin_sum, cos_sum)
-
+    def _fire(self, intensity: float, angle_rad: float):
+        """Spawn a beam on every arm whose cosine-weighted alignment to
+        this instant's angle clears MIN_ARM_WEIGHT - see class docstring's
+        INSTANT TRIGGER / BEAM RENDERING sections."""
         for k in range(self.ARM_COUNT):
             _, length = self.arm_ranges[k]
             if length == 0:
                 continue
-            weight = max(0.0, np.cos(mean_angle_rad - self.arm_center_rad[k]))
+            weight = max(0.0, np.cos(angle_rad - self.arm_center_rad[k]))
             if weight < self.MIN_ARM_WEIGHT:
                 continue
-            driven = speed * weight
+            driven = intensity * weight
             self._beams[k] = {
                 "pos": 0.0,
                 "speed": driven,
@@ -549,14 +563,11 @@ class TriArmGlideEffect:
         intensity = min(max(intensity, 0.0), 1.0)
         angle = min(max(angle, 0.0), 1.0)
         angle_rad = angle * 2 * np.pi
-        self._buffer.append((intensity, angle_rad))
 
-        if not self._in_swing and intensity > self.SWING_START_THRESHOLD:
-            self._in_swing = True
-        elif self._in_swing and intensity < self.SWING_END_THRESHOLD:
-            self._in_swing = False
-            self._finalise_swing()
-            self._buffer.clear()  # next swing's peak window starts clean, not mixed with this one's tail
+        self._cooldown_remaining = max(0.0, self._cooldown_remaining - self.TICK_SECONDS)
+        if intensity > self.SWING_TRIGGER_THRESHOLD and self._cooldown_remaining <= 0.0:
+            self._fire(intensity, angle_rad)
+            self._cooldown_remaining = self.SWING_COOLDOWN_SECONDS
 
         self.trail *= self.BEAM_DECAY
         for k in list(self._beams.keys()):
