@@ -427,6 +427,19 @@ async def output_loop(strips, dmx, zones_config, brightness: float = 1.0):
             n = _dmx_zone_pixel_count(output)
         zone_state[zone["name"]] = (None, None, None, np.zeros((n, 3), dtype=np.uint8), False)
 
+    # Diagnostic only (2026-08-18) - every effect in led_effects.py assumes
+    # TICK_SECONDS = 0.05 (one step() call = 0.05 real seconds) to convert
+    # bpm/rates into per-tick increments, e.g. HeartRateEffect's beat phase.
+    # That assumption is only true if this loop actually keeps up with 20Hz
+    # - if real per-iteration work (SPI/DMX writes, per-zone numpy effects)
+    # pushes the real period higher, every timed effect runs slow without
+    # any error or crash, just a pulse/animation that "feels" stretched out
+    # for no visible reason. Logs the real measured average once every ~5s
+    # of loop time so this is checkable on the Pi without extra tooling;
+    # remove once confirmed one way or the other.
+    _loop_rate_last_log = time.monotonic()
+    _loop_rate_tick_count = 0
+
     while True:
         led_frames = {}  # zone name -> frame, assembled into the full strip below, in led_ranges' order
         dmx_frames = {}  # zone name -> graded frame, published for admin.js's dmx zone swatches (not part of led_frame - dmx zones have no slot there)
@@ -566,6 +579,14 @@ async def output_loop(strips, dmx, zones_config, brightness: float = 1.0):
             dmx.send_channels(dmx_universe)
 
         await asyncio.sleep(0.05)  # 20 Hz
+
+        _loop_rate_tick_count += 1
+        now = time.monotonic()
+        if now - _loop_rate_last_log >= 5.0:
+            actual_hz = _loop_rate_tick_count / (now - _loop_rate_last_log)
+            print(f"[output_loop] actual rate: {actual_hz:.1f} Hz (target 20 Hz) - if well under 20, every effect's timed animations are running proportionally slower than intended")
+            _loop_rate_last_log = now
+            _loop_rate_tick_count = 0
 
 
 PALETTE_BUILD_POLL_SECONDS = 0.5  # not animation-critical, unlike the 20Hz loops above
