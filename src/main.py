@@ -594,8 +594,26 @@ async def output_loop(strips, dmx, zones_config, brightness: float = 1.0):
             length = local_end - local_start
             strip_buffers[strip_name][local_start:local_end] = hardware_frame[offset:offset + length]
             offset += length
-        for strip_name, strip in strips.items():
-            strip.render_pixels(strip_buffers[strip_name])
+        # Same blocking-I/O issue as sensor_loop's read() calls, and the
+        # dominant one in practice (2026-08-18): LEDStrip.render_pixels is a
+        # blocking spidev write, and DMXInterface.send_channels blocks for a
+        # real ~1ms break plus the wire time (and often real driver-level
+        # latency well beyond that, on cheap USB-serial dongles) to write +
+        # flush() a full 513-byte frame every call. Calling these
+        # synchronously here - once per tick, one after another - stalled
+        # this whole process the same way sensor reads did, and was the
+        # larger contributor once sensor reads stopped being the bottleneck.
+        # run_in_executor + gather moves them onto background threads and
+        # overlaps them, instead of summing each hardware write's real time
+        # directly onto every single tick.
+        loop = asyncio.get_running_loop()
+        write_calls = [
+            loop.run_in_executor(None, strip.render_pixels, strip_buffers[strip_name])
+            for strip_name, strip in strips.items()
+        ]
+        if dmx_universe is not None:
+            write_calls.append(loop.run_in_executor(None, dmx.send_channels, dmx_universe))
+        await asyncio.gather(*write_calls)
 
         server.latest["led_frame"] = led_frame
         # {zone_name: [[r,g,b], ...]} - separate from led_frame (which is one
@@ -603,8 +621,6 @@ async def output_loop(strips, dmx, zones_config, brightness: float = 1.0):
         # pixel space. admin.js paints each dmx zone's swatch straight from
         # here instead of slicing led_frame by offset.
         server.latest["dmx_frame"] = {name: frame.tolist() for name, frame in dmx_frames.items()}
-        if dmx_universe is not None:
-            dmx.send_channels(dmx_universe)
 
         await asyncio.sleep(0.05)  # 20 Hz
 
