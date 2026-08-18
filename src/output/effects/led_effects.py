@@ -740,26 +740,28 @@ class HeartRateEffect:
                 reading" behaviour as before. If contact drops mid-session,
                 it's abandoned - no partial sample recorded.
 
-    Brightness is a single smooth raised-cosine "breath" per beat - low at
-    phase 0, peak exactly at phase 0.5 (the middle of the beat, "in time"),
-    back to low at phase 1.0 - with no other smoothing/lag state on top
-    (an earlier version eased brightness toward this target tick by tick,
-    which meant one beat's level was still catching up when the colour
-    switched at the next beat boundary - visually two colours blending
-    into each other rather than one colour finishing its breath before the
-    next began; per Julia's explicit "I don't want overlapping effects...
-    single colour go bright and dim smoothly, then next colour" - dropped
-    entirely rather than tuned, since the shape itself is already smooth
-    and needs no further easing). One plain 0..1 brightness range
-    throughout (idle_level floor to 1.0 peak), identical whether the pulse
-    is palette-coloured or white, so "normal and standardised" doesn't mean
-    something different per mode."""
+    Brightness is a binary on/off flash per beat, not a smooth curve
+    (2026-08-18, replacing an earlier raised-cosine "breath" - at real bpm
+    the LED strip only gets a handful of actual frames across one beat, and
+    a smooth curve sampled that coarsely reads as choppy/stepped rather
+    than smooth anyway, since there aren't enough distinct brightness
+    levels rendered per beat for the eye to read as a continuous fade;
+    reported back as "leds aren't getting that smoothness in transition".
+    A flat on-then-off flash has no gradient to under-sample in the first
+    place, so it reads as crisp and deliberate at any real frame rate
+    instead of janky): full brightness for the first PULSE_ON_FRACTION of
+    the beat, idle_level for the rest, snapping instantly between the two
+    - no fade in either direction. Colour still steps once per beat the
+    same way it did before; only the brightness shape changed. Identical
+    whether the pulse is palette-coloured or white, so "normal and
+    standardised" doesn't mean something different per mode."""
 
     HISTORY_SIZE = 20
     READING_SECONDS = 10.0
     BPM_RANGE = (40.0, 180.0)  # must match config.yaml's heart_rate zone bpm {min, max}
     IDLE_FALLBACK_BPM = 70.0  # shown at rest before any reading's ever completed
     COLOUR_STEPS = 20  # beats to fully cycle the idle pulse's colour once around the palette, per Julia's "10 ticks" request
+    PULSE_ON_FRACTION = 0.2  # fraction of each beat spent at full brightness before snapping back to idle_level - untuned, adjust by feel
 
     def __init__(self, n_pixels, palette, idle_level=0.15):
         self.n = n_pixels
@@ -787,11 +789,10 @@ class HeartRateEffect:
         if self.phase < prev_phase:  # wrapped past 1.0 -> a new beat just started, colour steps here (see below)
             self.beat_count += 1
 
-        # Raised cosine: 0.0 at phase 0/1.0 (continuous across the wrap, no
-        # jump), 1.0 at phase 0.5 - a pure function of phase, no per-tick
-        # lag/smoothing state to carry anything across the colour change.
-        breath = 0.5 - 0.5 * np.cos(2 * np.pi * self.phase)
-        level = self.idle_level + (1.0 - self.idle_level) * breath
+        # Binary flash, not a curve - see class docstring on why a smooth
+        # fade under-samples into choppy steps at real bpm/frame-rate
+        # combinations. No interpolation to look janky in the first place.
+        level = 1.0 if self.phase < self.PULSE_ON_FRACTION else self.idle_level
 
         if white:
             colour = np.array([255.0, 255.0, 255.0])
