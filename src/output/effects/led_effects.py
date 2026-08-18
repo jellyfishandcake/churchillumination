@@ -722,15 +722,15 @@ class HeartRateEffect:
     patching it further, per that feedback). Two modes only, switching
     directly on contact - no chime states:
 
-      idle    - palette-coloured pulse at the rolling average of the last
+      idle    - palette-coloured breath at the rolling average of the last
                 HISTORY_SIZE completed readings (falls back to
                 IDLE_FALLBACK_BPM before any reading's ever completed).
                 Colour steps to the next of COLOUR_STEPS evenly-spaced
-                stops around the palette once per beat (not a continuous
-                drift on its own separate clock) - "tick over a bit on the
-                colour spectrum each time", cycling back to the start every
-                COLOUR_STEPS beats.
-      reading - white pulse at the LIVE bpm for READING_SECONDS, sampling
+                stops around the palette once per breath cycle (not a
+                continuous drift on its own separate clock) - "tick over a
+                bit on the colour spectrum each time", cycling back to the
+                start every COLOUR_STEPS cycles.
+      reading - white breath at the LIVE bpm for READING_SECONDS, sampling
                 bpm for this session's average, appended to history once
                 the window completes. Starts on a rising edge of
                 `intensity` (heart_rate.engaged - already debounced against
@@ -740,35 +740,44 @@ class HeartRateEffect:
                 reading" behaviour as before. If contact drops mid-session,
                 it's abandoned - no partial sample recorded.
 
-    Brightness is a binary on/off flash per beat, not a smooth curve
-    (2026-08-18, replacing an earlier raised-cosine "breath" - at real bpm
-    the LED strip only gets a handful of actual frames across one beat, and
-    a smooth curve sampled that coarsely reads as choppy/stepped rather
-    than smooth anyway, since there aren't enough distinct brightness
-    levels rendered per beat for the eye to read as a continuous fade;
-    reported back as "leds aren't getting that smoothness in transition".
-    A flat on-then-off flash has no gradient to under-sample in the first
-    place, so it reads as crisp and deliberate at any real frame rate
-    instead of janky): full brightness for the first PULSE_ON_FRACTION of
-    the beat, idle_level for the rest, snapping instantly between the two
-    - no fade in either direction. Colour still steps once per beat the
-    same way it did before; only the brightness shape changed. Identical
-    whether the pulse is palette-coloured or white, so "normal and
-    standardised" doesn't mean something different per mode."""
+    Brightness is a smooth raised-cosine "breath" - low at cycle-phase 0,
+    peak at phase 0.5, back to low at phase 1.0 - but ONE CYCLE NOW SPANS
+    BREATH_CYCLE_BEATS real heartbeats (5, untuned), not one. This is the
+    second brightness redesign in one day: v1 was this same raised-cosine
+    at one cycle per beat, but at real bpm the beat period (well under a
+    second) turned out too short for the loop's own timing jitter to stay
+    invisible inside - reported back as "sometimes jumps in at different
+    speeds". v2 tried a binary on/off flash instead (no gradient to expose
+    jitter in), but that read as too abrupt - "doesn't look good", missing
+    the smooth quality Julia had actually liked. This is the fix Julia
+    proposed for both problems at once: keep the smooth curve (the part
+    that looked good), just stretch its PERIOD out across several beats
+    instead of one - a few tens of milliseconds of timing jitter is
+    genuinely invisible inside a ~4 second cycle the same way it's glaring
+    inside an ~800ms one. The cycle's speed still scales directly with bpm
+    (a faster heart rate visibly speeds up the breathing), it just isn't
+    claiming to flash on every single individual beat anymore. Same
+    treatment for both idle and reading modes - the reading pulse is
+    already visually distinct via colour (white vs palette), so it doesn't
+    need to *also* be fast to read as "different from idle"; a calm, slow
+    breath arguably reads more like watching a real vital sign than a
+    flicker would. One plain 0..1 brightness range throughout (idle_level
+    floor to 1.0 peak), identical whether the pulse is palette-coloured or
+    white."""
 
     HISTORY_SIZE = 20
     READING_SECONDS = 10.0
     BPM_RANGE = (40.0, 180.0)  # must match config.yaml's heart_rate zone bpm {min, max}
     IDLE_FALLBACK_BPM = 70.0  # shown at rest before any reading's ever completed
-    COLOUR_STEPS = 20  # beats to fully cycle the idle pulse's colour once around the palette, per Julia's "10 ticks" request
-    PULSE_ON_FRACTION = 0.2  # fraction of each beat spent at full brightness before snapping back to idle_level - untuned, adjust by feel
+    COLOUR_STEPS = 20  # breath cycles to fully cycle the idle pulse's colour once around the palette, per Julia's "10 ticks" request
+    BREATH_CYCLE_BEATS = 5  # real heartbeats per one full smooth bright-dim breath - untuned, adjust by feel (see class docstring)
 
     def __init__(self, n_pixels, palette, idle_level=0.15):
         self.n = n_pixels
         self.lut = _palette_lut(palette)
         self.idle_level = idle_level
         self.phase = 0.0
-        self.beat_count = 0  # increments once per completed beat cycle - drives the idle colour step, see _pulse_frame
+        self.cycle_count = 0  # increments once per completed breath cycle (BREATH_CYCLE_BEATS beats) - drives the idle colour step, see _pulse_frame
         self.history = collections.deque(maxlen=self.HISTORY_SIZE)
         self._was_engaged = False
         self._reading_active = False
@@ -776,28 +785,28 @@ class HeartRateEffect:
         self._reading_samples = []
 
     def _pulse_frame(self, real_bpm: float, white: bool, dt: float):
-        # dt/beat_period is a genuine "real seconds elapsed / real seconds
-        # per beat" calculation, so bpm stays correct regardless of the
-        # actual loop rate - see ASSUMED_TICK_SECONDS's module docstring.
-        # (This briefly grew a `* 0.1` fudge on beat_period, compensating
-        # for the loop running ~10x slower than assumed instead of fixing
-        # that directly - removed now that dt makes the underlying
-        # assumption correct instead of worked around.)
+        # dt/cycle_period is a genuine "real seconds elapsed / real seconds
+        # per breath cycle" calculation, so bpm stays correct regardless of
+        # the actual loop rate - see ASSUMED_TICK_SECONDS's module
+        # docstring. cycle_period is BREATH_CYCLE_BEATS real beats' worth of
+        # time, not one - see class docstring on why.
         beat_period = 60.0 / real_bpm
+        cycle_period = beat_period * self.BREATH_CYCLE_BEATS
         prev_phase = self.phase
-        self.phase = (self.phase + dt / beat_period) % 1.0
-        if self.phase < prev_phase:  # wrapped past 1.0 -> a new beat just started, colour steps here (see below)
-            self.beat_count += 1
+        self.phase = (self.phase + dt / cycle_period) % 1.0
+        if self.phase < prev_phase:  # wrapped past 1.0 -> a new breath cycle just started, colour steps here (see below)
+            self.cycle_count += 1
 
-        # Binary flash, not a curve - see class docstring on why a smooth
-        # fade under-samples into choppy steps at real bpm/frame-rate
-        # combinations. No interpolation to look janky in the first place.
-        level = 1.0 if self.phase < self.PULSE_ON_FRACTION else self.idle_level
+        # Raised cosine: 0.0 at phase 0/1.0 (continuous across the wrap, no
+        # jump), 1.0 at phase 0.5 - a pure function of phase, no per-tick
+        # lag/smoothing state to carry anything across the colour change.
+        breath = 0.5 - 0.5 * np.cos(2 * np.pi * self.phase)
+        level = self.idle_level + (1.0 - self.idle_level) * breath
 
         if white:
             colour = np.array([255.0, 255.0, 255.0])
         else:
-            step = self.beat_count % self.COLOUR_STEPS
+            step = self.cycle_count % self.COLOUR_STEPS
             idx = int(step / self.COLOUR_STEPS * (len(self.lut) - 1))
             colour = self.lut[idx].astype(float)
 
