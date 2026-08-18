@@ -26,8 +26,8 @@
 // actually standing, flip the relevant one here rather than in motion.py -
 // this is a display-orientation fix, not a sensor one.
 
-const FLIP_X = false;
-const FLIP_Y = false;
+const FLIP_X = true;
+const FLIP_Y = true;
 
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
