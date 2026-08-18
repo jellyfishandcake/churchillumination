@@ -59,12 +59,17 @@ class MotionSensor(Sensor):
     depend on any history at all - a pixel is either in the human range or
     it isn't, tick to tick. human_temp_range is a placeholder (a clothed/
     skin surface reading, room ambient assumed well below it) - low end
-    lowered 27.0->24.0 (2026-08-18, still by feel, no real calibration data
-    yet) since 27.0 risked missing a clothed/distant/cooler-reading person
-    entirely as "just room temperature" rather than just under-including
-    them at the edges. Configurable via config.yaml's sensors.motion.
-    human_temp_range_low/high (see main.py's build_sensors) specifically so
-    it doesn't need a code redeploy to retune - calibrate with
+    lowered 27.0->24.0 (2026-08-18, still by feel at that point, no real
+    calibration data yet) since 27.0 risked missing a clothed/distant/
+    cooler-reading person entirely as "just room temperature" rather than
+    just under-including them at the edges. High end then lowered
+    34.0->31.0 the same day once real calibrate_sensor.py data came in:
+    thermal_frame_max topped out at 31.95°C across 25 samples, so 34.0 may
+    never have been reachable at all - the blob mask would ramp toward but
+    never actually reach full strength even with someone right in frame.
+    Configurable via config.yaml's sensors.motion.human_temp_range_low/high
+    (see main.py's build_sensors) specifically so it doesn't need a code
+    redeploy to retune - calibrate with
     `python -m tools.calibrate_sensor motion --live` and watch
     thermal_frame_min/max/mean with the room empty vs a person in frame,
     then set the low end to comfortably above the empty-room max.
@@ -83,8 +88,8 @@ class MotionSensor(Sensor):
     # just standing there. Thermal frames don't use this at all - see above.
     BASELINE_ALPHA = 0.005
 
-    def __init__(self, sensitivity: float = 10.0, webcam_sensitivity: float = 8.0,
-                 human_temp_range: tuple = (24.0, 34.0), webcam_blob_threshold: tuple = (15.0, 60.0)):
+    def __init__(self, sensitivity: float = 0.2, webcam_sensitivity: float = 8.0,
+                 human_temp_range: tuple = (24.0, 31.0), webcam_blob_threshold: tuple = (15.0, 60.0)):
         super().__init__()
         self.sensitivity = sensitivity
         self.webcam_sensitivity = webcam_sensitivity
@@ -214,12 +219,21 @@ class MotionSensor(Sensor):
         # thermal, 0-255 grayscale for webcam), before sensitivity/clamping -
         # not consumed by any zone (config.yaml only ever references
         # `motion`), purely so tools/calibrate_sensor.py's min/max/mean
-        # readout is actually useful here. `sensitivity`/`webcam_sensitivity`
-        # are untuned placeholders (see class docstring) and easy to
-        # saturate: sensitivity=10.0 clips `motion` to 1.0 at just a 0.1°C
-        # mean frame-to-frame diff, well within ordinary sensor read noise -
-        # if `motion` is pinned at 1.0 with nobody around, watch
-        # motion_raw_diff for a stretch (calibrate_sensor.py motion) and
-        # raise sensitivity's denominator (i.e. lower the constant) until
-        # idle noise reads near 0 and only real movement pushes it toward 1.
+        # readout is actually useful here. `sensitivity` was 10.0 (an
+        # untuned placeholder, same caveat as webcam_sensitivity) until real
+        # calibrate_sensor.py data came in 2026-08-18: motion_raw_diff
+        # ranged 0.36-1.56 over 25 samples, so even the *lowest* reading
+        # (0.36, presumably close to idle noise, though this run wasn't a
+        # clean isolated calm-room baseline) already computed
+        # 0.36*10=3.6 - clipped straight to 1.0, well within ordinary sensor
+        # read noise, matching motion sitting at mean=0.96 (essentially
+        # always saturated) in that same data. Lowered to 0.2
+        # (0.36*0.2≈0.07, comfortably low) - if `motion` is still pinned
+        # near 1.0 with nobody around, watch motion_raw_diff for a stretch
+        # with the room *deliberately* empty (calibrate_sensor.py motion)
+        # and raise sensitivity's denominator (i.e. lower the constant
+        # further) until idle noise reads near 0 and only real movement
+        # pushes it toward 1 - configurable via config.yaml's
+        # sensors.motion.sensitivity (see main.py's build_sensors) so this
+        # doesn't need a code redeploy to retune again.
         return {"motion": motion, "motion_raw_diff": float(diff.mean()), **blob_reading}

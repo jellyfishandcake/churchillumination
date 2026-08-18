@@ -192,18 +192,22 @@ sensors:
     enabled: true
 
   # Central MLX90640 thermal camera (frame-diff based motion). Falls back
-  # to a mock if the sensor/its library isn't present.
-  # human_temp_range_low/high (°C, absolute) is the band web/shadow.html's
-  # shadow-cast blob mask ramps 0..1 across, see motion.py's MotionSensor
-  # docstring. low lowered 27.0->24.0 (2026-08-18, still by feel, no real
-  # calibration data yet) - retune with
-  # `python -m tools.calibrate_sensor motion --live`, watching
-  # thermal_frame_min/max/mean with the room empty vs a person in frame,
-  # then set low to comfortably above the empty-room max.
+  # to a mock if the sensor/its library isn't present. sensitivity scales
+  # frame-to-frame diff into `motion` - was 10.0, lowered to 0.2
+  # (2026-08-18) once real calibrate_sensor.py data showed idle noise
+  # alone was already saturating it. human_temp_range_low/high (°C,
+  # absolute) is the band web/shadow.html's shadow-cast blob mask ramps
+  # 0..1 across - high end lowered 34.0->31.0 the same day, since
+  # thermal_frame_max topped out at 31.95°C in that data (34.0 may never
+  # have been reachable at all). Both from real on-site data at this
+  # point, not by-feel guesses - see motion.py's own comments for the
+  # numbers behind them. Retune further with
+  # `python -m tools.calibrate_sensor motion --live` if needed.
   motion:
     enabled: true
+    sensitivity: 0.2
     human_temp_range_low: 24.0
-    human_temp_range_high: 34.0
+    human_temp_range_high: 31.0
 
   # Pimoroni Multi-Sensor Stick (BME280 + LTR559), wired over a longer I2C
   # cable so it can sit away from the Pi and read true room conditions

@@ -70,6 +70,7 @@ def build_sensors(config: dict) -> dict:
     if sensors_config["motion"]["enabled"]:
         motion_config = sensors_config["motion"]
         sensors["motion"] = MotionSensor(
+            sensitivity=motion_config["sensitivity"],
             human_temp_range=(motion_config["human_temp_range_low"], motion_config["human_temp_range_high"]),
         )
     if sensors_config["multisensor"]["enabled"]:
