@@ -159,14 +159,6 @@ async def sensor_loop(sensors, infer, activation_tracker, hr_tracker, motion_tra
     ambient zone's ripple overlay reacts the instant a scene's detected.
     """
     smoothed = {}
-    # Diagnostic only (2026-08-18) - times each sensor's read() individually
-    # so a slow one is visible by name instead of just "the loop is slow
-    # overall". See _read below for where each timing is recorded; printed
-    # every ~5s, slowest first. Remove once the slow sensor (if any) is
-    # identified and dealt with.
-    _sensor_timings = {}  # name -> list of elapsed seconds this window
-    _sensor_timing_last_log = time.monotonic()
-
     while True:
         activation_tracker.timeout = server.runtime_settings["activation_timeout_seconds"]
         alpha = server.runtime_settings["smoothing_alpha"]
@@ -209,14 +201,10 @@ async def sensor_loop(sensors, infer, activation_tracker, hr_tracker, motion_tra
         ]
 
         def _read(name, s):
-            start = time.monotonic()
-            try:
-                if name in _I2C_SENSOR_NAMES:
-                    with _I2C_BUS_LOCK:
-                        return s.read()
-                return s.read()
-            finally:
-                _sensor_timings.setdefault(name, []).append(time.monotonic() - start)
+            if name in _I2C_SENSOR_NAMES:
+                with _I2C_BUS_LOCK:
+                    return s.read()
+            return s.read()
 
         results = await asyncio.gather(
             *(loop.run_in_executor(None, _read, name, s) for name, s in enabled_sensors),
@@ -290,18 +278,6 @@ async def sensor_loop(sensors, infer, activation_tracker, hr_tracker, motion_tra
         server.latest["sensors"] = smoothed
 
         await asyncio.sleep(0.05)  # 20 Hz
-
-        now_monotonic = time.monotonic()
-        if now_monotonic - _sensor_timing_last_log >= 5.0:
-            summary = sorted(
-                ((name, sum(times) / len(times), max(times)) for name, times in _sensor_timings.items() if times),
-                key=lambda row: row[1], reverse=True,
-            )
-            print("[sensor_loop] per-sensor read() time this window (avg / max, seconds), slowest first:")
-            for name, avg, mx in summary:
-                print(f"  {name:15s} avg={avg*1000:6.1f}ms  max={mx*1000:6.1f}ms")
-            _sensor_timings.clear()
-            _sensor_timing_last_log = now_monotonic
 
 
 def _resolve_one_source(latest: dict, spec):
