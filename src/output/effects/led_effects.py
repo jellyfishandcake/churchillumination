@@ -642,187 +642,112 @@ class PulseEffect:
 
 
 class HeartRateEffect:
-    """A "check-in" flow rather than PulseEffect's continuous contact-
-    follows-BPM display (kept as its own class/registry name for the same
-    reason AudioReactiveWaveEffect isn't a repurposed organic_wave - `pulse`
-    stays selectable elsewhere in its original shape). Four phases, cycling
-    on a *rising edge* of `intensity` (heart_rate.engaged - already
-    debounced against brief finger-contact blips by main.py's hr_tracker,
-    see its own ActivationTracker) so holding a finger down after a
-    completed reading doesn't immediately restart another one - lift and
-    reapply to take a new reading:
+    """Heart-rate globe. Rebuilt 2026-08-18 from scratch (a four-phase
+    check-in flow - idle/start_chime/reading/end_chime, with an
+    independently-clocked continuous hue drift and a separately-tuned
+    brightness cap layered on top - had drifted into behaviour reported
+    back as "glitchy... random and weird colours"; scrapping it rather than
+    patching it further, per that feedback). Two modes only, switching
+    directly on contact - no chime states:
 
-      idle        - palette-coloured pulse at the rolling average of the
-                    last HISTORY_SIZE completed readings (falls back to a
-                    resting 70 bpm before any reading's ever completed) -
-                    the "ambient" display, not tied to live contact at all.
-      start_chime - two quick white flashes, contact just detected.
-      reading     - white pulse at the LIVE bpm for READING_SECONDS,
-                    sampling bpm for this session's average. Distinct
-                    colour from idle is the point: white unambiguously
-                    means "reading you right now, hold still".
-      end_chime   - two quick white flashes; the session's mean bpm is
-                    appended to history before returning to idle.
+      idle    - palette-coloured pulse at the rolling average of the last
+                HISTORY_SIZE completed readings (falls back to
+                IDLE_FALLBACK_BPM before any reading's ever completed).
+                Colour steps to the next of COLOUR_STEPS evenly-spaced
+                stops around the palette once per beat (not a continuous
+                drift on its own separate clock) - "tick over a bit on the
+                colour spectrum each time", cycling back to the start every
+                COLOUR_STEPS beats.
+      reading - white pulse at the LIVE bpm for READING_SECONDS, sampling
+                bpm for this session's average, appended to history once
+                the window completes. Starts on a rising edge of
+                `intensity` (heart_rate.engaged - already debounced against
+                brief contact blips by main.py's hr_tracker) and locks out
+                a new session until contact is released and reapplied
+                (`_reading_active`), same "lift and reapply for a new
+                reading" behaviour as before. If contact drops mid-session,
+                it's abandoned - no partial sample recorded.
 
-    If contact drops during `reading` before READING_SECONDS elapses, the
-    session's abandoned (no history update, no end chime) rather than
-    recording a partial sample as if it were a real reading."""
+    Brightness is a single smooth raised-cosine "breath" per beat - low at
+    phase 0, peak exactly at phase 0.5 (the middle of the beat, "in time"),
+    back to low at phase 1.0 - with no other smoothing/lag state on top
+    (an earlier version eased brightness toward this target tick by tick,
+    which meant one beat's level was still catching up when the colour
+    switched at the next beat boundary - visually two colours blending
+    into each other rather than one colour finishing its breath before the
+    next began; per Julia's explicit "I don't want overlapping effects...
+    single colour go bright and dim smoothly, then next colour" - dropped
+    entirely rather than tuned, since the shape itself is already smooth
+    and needs no further easing). One plain 0..1 brightness range
+    throughout (idle_level floor to 1.0 peak), identical whether the pulse
+    is palette-coloured or white, so "normal and standardised" doesn't mean
+    something different per mode."""
 
     HISTORY_SIZE = 20
     READING_SECONDS = 10.0
-    CHIME_SECONDS = 0.5
     TICK_SECONDS = 0.05
     BPM_RANGE = (40.0, 180.0)  # must match config.yaml's heart_rate zone bpm {min, max}
     IDLE_FALLBACK_BPM = 70.0  # shown at rest before any reading's ever completed
+    COLOUR_STEPS = 10  # beats to fully cycle the idle pulse's colour once around the palette, per Julia's "10 ticks" request
 
-    # How long one full drift across the *entire* palette takes, in the
-    # idle phase - deliberately a totally separate clock from the
-    # heartbeat (see HUE_RANGE's replacement here, 2026-08-17 v2): the
-    # original bug was indexing the whole palette with the beat's own
-    # brightness envelope, so hue swept end to end on every single beat -
-    # looked glitchy. Narrowing to one fixed hue band (2026-08-17 v1) fixed
-    # the glitch but killed the "explore the palette" feeling entirely -
-    # per user follow-up: "I still want a palette inspiration colour and
-    # maybe it pulses and gradually changes throughout the palette
-    # spectrum". This is that: hue now drifts across the full gradient on
-    # its own slow independent timer (`self.hue_phase`, advanced once per
-    # tick regardless of pulse state), while `level` (the fast, beat-
-    # synced envelope) only ever controls brightness. Slow enough that
-    # motion is never abrupt, fast enough to actually notice over a
-    # minute or so of watching - retune per palette/taste.
-    HUE_CYCLE_SECONDS = 20.0
-    # Ceiling on the pulse's peak brightness - not 1.0 on purpose (per user
-    # request 2026-08-17: the un-capped version read as "very
-    # bright"/distracting up close). Applies to the white `reading` phase
-    # too, dimmed but still clearly distinct from the idle phase's colour.
-    MAX_BRIGHTNESS = 0.6
-
-    def __init__(self, n_pixels, palette, idle_level=0.15, ease=0.7, decay_rate=7.0):
+    def __init__(self, n_pixels, palette, idle_level=0.15):
         self.n = n_pixels
         self.lut = _palette_lut(palette)
         self.idle_level = idle_level
-        # Raised from 0.15 (2026-08-17 v3) - `level` is what actually
-        # reaches the display, but at 0.15 it only tracks 15% of the way
-        # toward `target` each tick, and target's own oscillation (1.0 down
-        # to idle_level every single beat) happens on roughly the same
-        # timescale as that catch-up - so most of the swing got smoothed
-        # away before it ever showed up, leaving a barely-there ~9-17
-        # brightness ripple (out of a possible ~150) that read as no
-        # perceptible rhythm at all. 0.7 lets level track target closely
-        # enough that the beat is clearly recognisable, and decay_rate
-        # (below) is now raised too, on top of that, for a snappier,
-        # more accentuated pulse rather than a gentle breathing shape.
-        self.ease = ease
-        # Went 6.0 -> 3.5 -> 7.0 over the course of 2026-08-17/18 - 3.5 was
-        # a deliberate softening for a gentler, less distracting pulse, but
-        # that also stretched the bright phase out over most of the beat
-        # cycle and read as barely any rhythm at all once `ease` (above) was
-        # also fixed to actually let it through. 7.0 snaps back down faster,
-        # holding low the rest of the cycle - a clearer, more accentuated
-        # "beat" shape, per explicit request. See step()'s docstring for the
-        # exp(-phase * decay_rate) shape this controls.
-        self.decay_rate = decay_rate
-        self.level = idle_level
         self.phase = 0.0
-        self.hue_phase = 0.0  # 0..1, own slow independent clock - see HUE_CYCLE_SECONDS
+        self.beat_count = 0  # increments once per completed beat cycle - drives the idle colour step, see _pulse_frame
         self.history = collections.deque(maxlen=self.HISTORY_SIZE)
         self._was_engaged = False
-        self._chime_elapsed = 0.0
+        self._reading_active = False
         self._reading_elapsed = 0.0
         self._reading_samples = []
-        self._state = "idle"
-
-    def _color_at_level(self, level: float, white: bool = False):
-        """`level` (0..1, the pulse's current fast brightness envelope)
-        only ever scales brightness now. Hue - for the non-white idle
-        phase - comes from `self.hue_phase` instead, a separate slow clock
-        advanced once per tick in step() (see HUE_CYCLE_SECONDS), so
-        colour drifts gradually across the whole palette independently of
-        the heartbeat's own rhythm. white=True (the `reading` phase)
-        genuinely brightness-pulses too, rather than statically ignoring
-        `level` and always returning solid white regardless of pulse
-        phase."""
-        level = min(max(level, 0.0), 1.0)
-        if white:
-            base = np.array([255.0, 255.0, 255.0])
-        else:
-            idx = int(self.hue_phase * (len(self.lut) - 1))
-            base = self.lut[idx].astype(float)
-        return base * level * self.MAX_BRIGHTNESS
 
     def _pulse_frame(self, real_bpm: float, white: bool):
         beat_period = 60.0 / real_bpm
+        prev_phase = self.phase
         self.phase = (self.phase + self.TICK_SECONDS / beat_period) % 1.0
-        pulse = np.exp(-self.phase * self.decay_rate)
-        target = self.idle_level + (1.0 - self.idle_level) * pulse
-        self.level += (target - self.level) * self.ease
-        color = self._color_at_level(self.level, white=white)
-        return np.tile(color, (self.n, 1))
+        if self.phase < prev_phase:  # wrapped past 1.0 -> a new beat just started, colour steps here (see below)
+            self.beat_count += 1
 
-    def _chime_frame(self):
-        # Two flashes across CHIME_SECONDS - a deliberately different
-        # rhythm from the smooth BPM sine so it reads as a distinct "chime"
-        # cue, not just another heartbeat. Now scaled by MAX_BRIGHTNESS
-        # (2026-08-18 - was full uncapped 255,255,255, an oversight from
-        # when MAX_BRIGHTNESS was added elsewhere in this class but not
-        # here) - the chime was consistently, reproducibly brighter than
-        # the rest of the effect every single time it fired, which is also
-        # where a real hardware white-balance skew (many cheap addressable
-        # RGB LEDs render full-strength white with a visible blue tint,
-        # since the blue die is typically more efficient than red/green at
-        # matched signal levels) would be most visible - full brightness is
-        # exactly where that skew shows up strongest.
-        quarter = self.CHIME_SECONDS / 4
-        flash_on = (self._chime_elapsed % (2 * quarter)) < quarter
-        level = 1.0 if flash_on else 0.0
-        return np.tile(np.array([255.0, 255.0, 255.0]) * level * self.MAX_BRIGHTNESS, (self.n, 1))
+        # Raised cosine: 0.0 at phase 0/1.0 (continuous across the wrap, no
+        # jump), 1.0 at phase 0.5 - a pure function of phase, no per-tick
+        # lag/smoothing state to carry anything across the colour change.
+        breath = 0.5 - 0.5 * np.cos(2 * np.pi * self.phase)
+        level = self.idle_level + (1.0 - self.idle_level) * breath
+
+        if white:
+            colour = np.array([255.0, 255.0, 255.0])
+        else:
+            step = self.beat_count % self.COLOUR_STEPS
+            idx = int(step / self.COLOUR_STEPS * (len(self.lut) - 1))
+            colour = self.lut[idx].astype(float)
+
+        return np.tile(colour * level, (self.n, 1))
 
     def step(self, intensity: float = 0.0, bpm: float = 0.5):
-        # Advanced unconditionally, every tick, regardless of phase - a
-        # clock fully independent of the heartbeat/state machine below, see
-        # HUE_CYCLE_SECONDS's comment.
-        self.hue_phase = (self.hue_phase + self.TICK_SECONDS / self.HUE_CYCLE_SECONDS) % 1.0
-
         engaged = intensity > 0.5
         rising_edge = engaged and not self._was_engaged
         self._was_engaged = engaged
 
-        if self._state == "idle" and rising_edge:
-            self._state = "start_chime"
-            self._chime_elapsed = 0.0
+        if rising_edge and not self._reading_active:
+            self._reading_active = True
+            self._reading_elapsed = 0.0
+            self._reading_samples = []
+        elif not engaged and self._reading_active:
+            self._reading_active = False  # abandoned - contact lost mid-reading, nothing recorded
 
-        if self._state == "idle":
+        if self._reading_active and engaged:
+            real_bpm = self.BPM_RANGE[0] + min(max(bpm, 0.0), 1.0) * (self.BPM_RANGE[1] - self.BPM_RANGE[0])
+            self._reading_samples.append(real_bpm)
+            frame = self._pulse_frame(real_bpm, white=True)
+            self._reading_elapsed += self.TICK_SECONDS
+            if self._reading_elapsed >= self.READING_SECONDS:
+                self.history.append(sum(self._reading_samples) / len(self._reading_samples))
+                self._reading_active = False  # done - lift and reapply for another reading
+        else:
             avg_bpm = sum(self.history) / len(self.history) if self.history else self.IDLE_FALLBACK_BPM
             real_bpm = min(max(avg_bpm, self.BPM_RANGE[0]), self.BPM_RANGE[1])
             frame = self._pulse_frame(real_bpm, white=False)
-
-        elif self._state == "start_chime":
-            frame = self._chime_frame()
-            self._chime_elapsed += self.TICK_SECONDS
-            if self._chime_elapsed >= self.CHIME_SECONDS:
-                self._state = "reading" if engaged else "idle"
-                self._reading_elapsed = 0.0
-                self._reading_samples = []
-
-        elif self._state == "reading":
-            if not engaged:
-                self._state = "idle"  # abandoned - contact lost mid-reading, nothing recorded
-                frame = self._pulse_frame(self.IDLE_FALLBACK_BPM, white=False)
-            else:
-                real_bpm = self.BPM_RANGE[0] + min(max(bpm, 0.0), 1.0) * (self.BPM_RANGE[1] - self.BPM_RANGE[0])
-                self._reading_samples.append(real_bpm)
-                frame = self._pulse_frame(real_bpm, white=True)
-                self._reading_elapsed += self.TICK_SECONDS
-                if self._reading_elapsed >= self.READING_SECONDS:
-                    self.history.append(sum(self._reading_samples) / len(self._reading_samples))
-                    self._state = "end_chime"
-                    self._chime_elapsed = 0.0
-
-        else:  # end_chime
-            frame = self._chime_frame()
-            self._chime_elapsed += self.TICK_SECONDS
-            if self._chime_elapsed >= self.CHIME_SECONDS:
-                self._state = "idle"
 
         return np.clip(frame, 0, 255).astype(np.uint8)
 
@@ -859,11 +784,19 @@ class TempHumidityBarEffect:
        reading up over a few seconds regardless of what contrast happens
        to be that day, so this triggers on the *rate of rise*
        (TOUCH_TRIGGER_DELTA over TOUCH_WINDOW_SECONDS), not on an absolute
-       level. Firing blends the whole bar toward a warm glow that decays
-       back over PULSE_DECAY_SECONDS - an unmistakable "something touched
-       me" flash distinct from the slow layers above it, re-armed only
-       once the reading drops back down (COOLDOWN_RESET_FRACTION) so a
-       hand left resting there doesn't refire every tick.
+       level. Firing boosts the *same* sparkle mechanic layer 2 uses (see
+       _sparkle) but faster and much stronger (TOUCH_BURST_MAX_BOOST vs
+       SHIMMER_MAX_BOOST) - a burst of energetic glimmer decaying back over
+       PULSE_DECAY_SECONDS, not a flat colour wash (an earlier version
+       blended the whole bar toward a solid warm colour, but combined with
+       this fixture's white channel - see main.py's _fixture_channel_values,
+       a crude `min(r,g,b)` heuristic - anything close to desaturated white
+       read as just "glows white", not a distinct touch reaction; per
+       Julia's own framing this should read as glimmer, not a wash, so it's
+       the same kind of effect as the contrast shimmer, just an unmistakably
+       bigger/faster burst of it). Re-armed only once the reading drops back
+       down (COOLDOWN_RESET_FRACTION) so a hand left resting there doesn't
+       refire every tick.
 
     TICK_SECONDS assumes the same fixed 20Hz cadence every effect in this
     file is driven at (main.py's output_loop) - effects don't receive an
@@ -901,8 +834,8 @@ class TempHumidityBarEffect:
     TOUCH_WINDOW_SECONDS = 6.0   # how far back the touch-delta looks
     TOUCH_TRIGGER_DELTA = 0.12   # rise (in the 0..1 rescaled temperature units) over that window that counts as "someone touched the sensor"
     COOLDOWN_RESET_FRACTION = 0.5  # re-arms once the rise drops back below TOUCH_TRIGGER_DELTA * this - stops one long touch refiring every tick
-    PULSE_DECAY_SECONDS = 4.0    # roughly how long the touch glow takes to fade back into the ambient base
-    PULSE_COLOUR = (255, 220, 150)  # warm "something touched me" glow, distinct from every CONDITION_COLOURS entry
+    PULSE_DECAY_SECONDS = 4.0    # roughly how long the touch burst takes to fade back into the ambient base
+    TOUCH_BURST_MAX_BOOST = 2.2  # brightness boost added at pulse_level=1.0 - well above SHIMMER_MAX_BOOST so a touch unmistakably outshines everyday contrast glimmer
 
     def __init__(self, n_pixels, palette, background_level=0.05):
         self.n = n_pixels
@@ -924,12 +857,29 @@ class TempHumidityBarEffect:
         colour = np.array(self.CONDITION_COLOURS[name], dtype=float)
         return colour[None, :] * brightness[:, None]
 
+    def _sparkle(self, seed: int, x_scale: float, t_scale: float, power: float = 2.0) -> np.ndarray:
+        """Shared sparkle-noise primitive behind both the contrast shimmer
+        and the touch burst below - >= 0 always, and raising `power` makes
+        it sparser/glitterier (only near-peak spots of the underlying noise
+        stay visible) rather than a smooth wave. Distinct seed/x_scale/
+        t_scale per caller so the two read as different textures, not just
+        different amounts of the same one."""
+        x = np.arange(self.n)
+        noise = value_noise(x * x_scale, np.full(self.n, self.t * t_scale), seed=seed)
+        return np.clip(noise, 0.0, None) ** power
+
     def _shimmer_boost(self, contrast: float) -> np.ndarray:
         """Brightness-only multiplier, >= 1.0 always - glimmer only ever
         adds sparkle on top of the ambient base, never darkens it."""
-        x = np.arange(self.n)
-        sparkle = np.clip(value_noise(x * 1.4, np.full(self.n, self.t * 2.2), seed=11), 0.0, None) ** 2
+        sparkle = self._sparkle(seed=11, x_scale=1.4, t_scale=2.2)
         return 1.0 + sparkle * contrast * self.SHIMMER_MAX_BOOST
+
+    def _touch_burst_boost(self, pulse_level: float) -> np.ndarray:
+        """Same shape as _shimmer_boost but a faster, sparser, much stronger
+        sparkle - see class docstring on why a touch is a bigger/quicker
+        burst of the same texture rather than a solid colour wash."""
+        sparkle = self._sparkle(seed=13, x_scale=2.2, t_scale=6.0, power=3.0)
+        return 1.0 + sparkle * pulse_level * self.TOUCH_BURST_MAX_BOOST
 
     def _update_touch_pulse(self, temperature: float) -> float:
         """Rising-edge detector on raw temperature - see class docstring on
@@ -958,8 +908,7 @@ class TempHumidityBarEffect:
 
         pulse_level = self._update_touch_pulse(temperature)
         if pulse_level > 0.0:
-            pulse_colour = np.array(self.PULSE_COLOUR, dtype=float)
-            frame = frame + (pulse_colour[None, :] - frame) * pulse_level
+            frame = frame * self._touch_burst_boost(pulse_level)[:, None]
 
         return np.clip(frame, 0, 255).astype(np.uint8)
 
