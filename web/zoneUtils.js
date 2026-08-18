@@ -15,12 +15,20 @@
 
 // Display-only - the exact `frame` values are still what's sent to the real
 // LEDs via leds.render_pixels() in main.py; this only changes how pixels are
-// drawn on a webpage. Fully opaque (2026-08-16, was alpha-faded toward
-// whatever's behind .swatch-strip by brightness) - that fade meant a dim
-// zone never showed its actual colour, just an increasingly faint blend
-// with the page's background (cream, or black before that), which read as
-// a washed-out grey rather than "this zone's real colour, just dark". Now
-// a dim/off pixel paints as its own dim/dark solid colour instead.
+// drawn on a webpage. Any pixel with real colour (even dim) paints fully
+// opaque (2026-08-16 - was alpha-faded toward whatever's behind
+// .swatch-strip by brightness, which meant a dim zone never showed its
+// actual colour, just an increasingly faint blend with the page's
+// background - read as a washed-out grey rather than "this zone's real
+// colour, just dark"). But a pixel that's exactly [0,0,0] - genuinely no
+// signal, not just dim - paints fully transparent instead of solid black
+// (2026-08-18, reported back as accelerometer/heart_rate showing "black
+// background" whenever those zones sit mostly/fully off - see .zone-card's
+// own background in style.css, meant to show through here). Only exact
+// black gets this treatment, not "dim" generally, specifically so this
+// doesn't regress back into the same washed-out-grey problem the opaque
+// change above was fixing - a colour that's merely dark still paints as
+// that real dark colour, not faded toward transparent.
 function paintSwatchStrip(ctx, canvas, frame) {
   const n = frame.length;
   if (canvas.width !== n) canvas.width = n;
@@ -30,7 +38,7 @@ function paintSwatchStrip(ctx, canvas, frame) {
     imageData.data[i * 4] = r;
     imageData.data[i * 4 + 1] = g;
     imageData.data[i * 4 + 2] = b;
-    imageData.data[i * 4 + 3] = 255;
+    imageData.data[i * 4 + 3] = (r === 0 && g === 0 && b === 0) ? 0 : 255;
   }
   ctx.putImageData(imageData, 0, 0);
 }

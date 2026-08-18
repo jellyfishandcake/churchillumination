@@ -28,6 +28,50 @@ import collections
 import numpy as np
 from .colour_palette import PALETTES, _palette_lut
 
+# Every speed/decay/rate constant in this file was originally hand-tuned by
+# eye assuming main.py's output_loop calls step() at a steady 20Hz (one call
+# = ASSUMED_TICK_SECONDS real seconds). That assumption turned out to be
+# false on real hardware (found 2026-08-18: the loop was running at ~2-3Hz,
+# not 20Hz, from blocking sensor/DMX I/O - see main.py's sensor_loop/
+# output_loop) - every timed effect ran proportionally slower than intended
+# with no error, just animations that "felt" wrong (a 70bpm heart pulse
+# stretched to several seconds). Rather than chase "make the loop exactly
+# 20Hz" as the only fix, every effect below now takes the *real* elapsed
+# time (`dt`, measured by output_loop via time.monotonic() and passed into
+# step()) and uses it directly, so animation speed stays correct in real
+# seconds regardless of the actual loop rate. ASSUMED_TICK_SECONDS is kept
+# as the reference baseline every hand-tuned constant was calibrated
+# against - at dt == ASSUMED_TICK_SECONDS, every formula below reduces to
+# exactly what it was before this change, so nothing needed re-tuning, just
+# correctly generalising.
+ASSUMED_TICK_SECONDS = 0.05
+
+
+def _rate_scale(dt: float) -> float:
+    """How much faster/slower than the ASSUMED_TICK_SECONDS baseline this
+    tick's real dt is - multiply a per-assumed-tick ADDITIVE increment
+    (self.t +=, a beam's pos +=, ...) by this to correctly generalise it to
+    real elapsed time."""
+    return dt / ASSUMED_TICK_SECONDS
+
+
+def _decay_scale(per_tick_factor: float, dt: float) -> float:
+    """Generalises a per-assumed-tick MULTIPLICATIVE decay/fade constant
+    (self.trail *= 0.9, ...) to real elapsed time. Decay compounds, so this
+    needs the exponent, not the same linear ratio _rate_scale uses -
+    per_tick_factor applied N times in a row is per_tick_factor**N, and a
+    dt that's e.g. 2x the assumed tick should apply two "ticks" worth of
+    decay in one call."""
+    return per_tick_factor ** _rate_scale(dt)
+
+
+def _ema_rate(per_tick_rate: float, dt: float) -> float:
+    """Generalises a per-assumed-tick exponential-moving-average rate (used
+    as `level += (target - level) * rate`) to real elapsed time - same
+    compounding reasoning as _decay_scale (one minus the rate is what
+    actually decays each step)."""
+    return 1.0 - _decay_scale(1.0 - per_tick_rate, dt)
+
 
 def _hash2d(ix, it, seed=0):
     ix = ix.astype(np.int64)
@@ -107,7 +151,7 @@ class OrganicWaveEffect:
         self.highlight = highlight
         self.t = 0.0
 
-    def step(self, intensity: float = 1.0):
+    def step(self, intensity: float = 1.0, dt: float = ASSUMED_TICK_SECONDS):
         """intensity is the current activity_level (0..1) - quiet rooms get
         a slower, dimmer flow; lively rooms get a faster, brighter one.
         speed_scale's floor raised from 0.3 to 0.8 (2026-07-28) - on a
@@ -118,7 +162,10 @@ class OrganicWaveEffect:
         variation to compensate for a slow time-evolution the way a whole
         strip has. Base `speed` bumped 0.006->0.03 for the same reason -
         still scales with intensity same as before, just faster at every
-        point on that scale."""
+        point on that scale. `dt` is the real elapsed seconds since the
+        last step() call (see ASSUMED_TICK_SECONDS's module docstring) -
+        self.t's advance is scaled by it so drift speed stays correct in
+        real time regardless of the actual loop rate."""
         speed_scale = scaled(intensity, 0.8, 2.0)
         brightness_scale = scaled(intensity, 0.3, 1.2)  # was 0.4-1.2 (too little contrast), then 0.15-1.2 (too dim)
 
@@ -133,7 +180,7 @@ class OrganicWaveEffect:
             agreement = np.clip(layer1 * layer2, 0, None)
             frame = np.clip(frame + (agreement * 70)[:, None], 0, 255)
         frame = np.clip(frame * brightness_scale, 0, 255)
-        self.t += self.speed * speed_scale
+        self.t += self.speed * speed_scale * _rate_scale(dt)
         return frame.astype(np.uint8)
 
 
@@ -169,7 +216,6 @@ class AudioReactiveWaveEffect:
     tuned, rather than the whole effect spending its life squeezed into
     one end of the gradient."""
 
-    TICK_SECONDS = 0.05
     # How much motion speeds up the underlying noise field's drift - widened
     # 2026-08-17 (was 0.8-2.0, a bare 2.5x range on top of an already-slow
     # base drift - too subtle to actually notice, per user complaint "you
@@ -203,7 +249,8 @@ class AudioReactiveWaveEffect:
         self._ceiling_floor = ceiling_floor
         self._ceiling_decay_per_second = ceiling_decay_per_second
 
-    def step(self, loudness: float = 0.0, motion: float = 0.0, env_brightness: float = 0.5, ripple: float = 0.0):
+    def step(self, loudness: float = 0.0, motion: float = 0.0, env_brightness: float = 0.5, ripple: float = 0.0,
+              dt: float = ASSUMED_TICK_SECONDS):
         motion = min(max(motion, 0.0), 1.0)
         speed_scale = scaled(motion, *self.SPEED_SCALE_RANGE)
         brightness_scale = scaled(env_brightness, 0.5, 1.0)  # never fully dark - this is ambient decor, not a screen
@@ -213,13 +260,16 @@ class AudioReactiveWaveEffect:
         # slowly back down otherwise (so an earlier loud spell doesn't
         # permanently compress everything afterwards into a narrow low
         # band) - never below ceiling_floor, so there's always at least a
-        # usable range even in a totally silent room.
+        # usable range even in a totally silent room. ceiling_decay_per_second
+        # is already a real per-second rate, so it just needs the real `dt`
+        # in place of the old fixed-TICK_SECONDS assumption - no ratio/
+        # exponent scaling needed here, unlike self.t's advance below.
         if loudness > self._ceiling:
             self._ceiling = loudness
         else:
             self._ceiling = max(
                 self._ceiling_floor,
-                self._ceiling - self._ceiling * self._ceiling_decay_per_second * self.TICK_SECONDS,
+                self._ceiling - self._ceiling * self._ceiling_decay_per_second * dt,
             )
         loudness_pos = min(1.0, loudness / self._ceiling) if self._ceiling > 0 else 0.0
 
@@ -255,7 +305,7 @@ class AudioReactiveWaveEffect:
         if ripple > 0:
             frame = frame + (255 - frame) * ripple * 0.8  # wash toward white without fully overriding the wave's own colour
 
-        self.t += self.speed * speed_scale
+        self.t += self.speed * speed_scale * _rate_scale(dt)
         return np.clip(frame, 0, 255).astype(np.uint8)
 
 
@@ -275,15 +325,15 @@ class OrganicCometEffect:
         self.seed = seed
         self.t = 0.0
 
-    def step(self, intensity: float = 1.0):
+    def step(self, intensity: float = 1.0, dt: float = ASSUMED_TICK_SECONDS):
         """intensity is the current activity_level (0..1) - quiet rooms get
         a slower, dimmer comet; lively rooms get a faster, brighter one."""
         speed_scale = scaled(intensity, 0.3, 1.2)
         brightness_scale = scaled(intensity, 0.4, 1.2)
 
         wobble = 0.35 * value_noise(np.array([self.t]), np.array([0.0]), seed=self.seed)[0]
-        self.pos = (self.pos + self.speed * speed_scale * (1 + wobble)) % self.n
-        self.trail *= self.decay
+        self.pos = (self.pos + self.speed * speed_scale * (1 + wobble) * _rate_scale(dt)) % self.n
+        self.trail *= _decay_scale(self.decay, dt)
         idx0 = int(np.floor(self.pos)) % self.n
         idx1 = (idx0 + 1) % self.n
         frac = self.pos - np.floor(self.pos)
@@ -293,7 +343,7 @@ class OrganicCometEffect:
         comet_color = self.lut[palette_index]
         frame = self.background[None, :] + (comet_color - self.background)[None, :] * self.trail[:, None]
         frame = frame * brightness_scale
-        self.t += 0.4
+        self.t += 0.4 * _rate_scale(dt)
         return np.clip(frame, 0, 255).astype(np.uint8)
 
 
@@ -314,14 +364,19 @@ class OrganicTwinkleEffect:
         self.decay = np.full(n_pixels, 0.96)
         self.peak = np.ones(n_pixels)
 
-    def step(self, intensity: float = 1.0):
+    def step(self, intensity: float = 1.0, dt: float = ASSUMED_TICK_SECONDS):
         """intensity is the current activity_level (0..1) - quiet rooms get
         fewer, dimmer stars; lively rooms get more, brighter ones."""
         spawn_scale = scaled(intensity, 0.3, 1.7)
         brightness_scale = scaled(intensity, 0.4, 1.2)
 
-        self.brightness *= self.decay
-        spawn = np.random.random(self.n) < self.spawn_prob * spawn_scale
+        self.brightness *= _decay_scale(self.decay, dt)
+        # spawn_prob is a per-assumed-tick probability - scaling it linearly
+        # by _rate_scale keeps the real-time spawn RATE correct (a fair
+        # approximation for a low per-interval probability like this one,
+        # same reasoning a Poisson-process rate scales linearly with the
+        # window length).
+        spawn = np.random.random(self.n) < self.spawn_prob * spawn_scale * _rate_scale(dt)
         n_spawn = int(spawn.sum())
         if n_spawn:
             self.brightness[spawn] = 1.0
@@ -363,11 +418,11 @@ class ReactiveGlowEffect:
         self.idle_level = idle_level
         self.level = idle_level
 
-    def step(self, intensity: float = 0.0):
+    def step(self, intensity: float = 0.0, dt: float = ASSUMED_TICK_SECONDS):
         intensity = min(max(intensity, 0.0), 1.0)
         target = self.idle_level + (1.0 - self.idle_level) * intensity
         rate = self.attack if target > self.level else self.decay
-        self.level += (target - self.level) * rate
+        self.level += (target - self.level) * _ema_rate(rate, dt)
 
         index = int(self.level * (len(self.lut) - 1))
         color = self.lut[index].astype(float)
@@ -498,7 +553,6 @@ class TriArmGlideEffect:
     ARM_LENGTHS = (36, 20, 16, 22)                  # confirmed 2026-08-10 post-soldering - see docstring, chain order
     ARM_ANGLES_DEG = (20.0, 45.0, 90.0, 135.0)      # confirmed 2026-08-10, approximate - see docstring
     ARM_REVERSED = (False, True, False, True)       # confirmed 2026-08-10 - arms 2 and 4 wired tip-to-hub, see docstring
-    TICK_SECONDS = 0.05                    # matches main.py's output_loop's fixed 20Hz - see PulseEffect's own note on this same assumption
 
     # Swing detection - untuned placeholders (feel, not physics, same
     # caveat as accel_stick.ino's SENSITIVITY), but SWING_TRIGGER_THRESHOLD
@@ -559,21 +613,25 @@ class TriArmGlideEffect:
                 "brightness": scaled(driven, 0.3, 1.0),
             }
 
-    def step(self, intensity: float = 0.0, angle: float = 0.0):
+    def step(self, intensity: float = 0.0, angle: float = 0.0, dt: float = ASSUMED_TICK_SECONDS):
         intensity = min(max(intensity, 0.0), 1.0)
         angle = min(max(angle, 0.0), 1.0)
         angle_rad = angle * 2 * np.pi
 
-        self._cooldown_remaining = max(0.0, self._cooldown_remaining - self.TICK_SECONDS)
+        # Cooldown is a real countdown in seconds - dt substitutes directly
+        # for the old fixed-TICK_SECONDS assumption, no ratio/exponent
+        # needed (unlike BEAM_SPEED_SCALE/BEAM_DECAY below, which were
+        # tuned as per-assumed-tick rates).
+        self._cooldown_remaining = max(0.0, self._cooldown_remaining - dt)
         if intensity > self.SWING_TRIGGER_THRESHOLD and self._cooldown_remaining <= 0.0:
             self._fire(intensity, angle_rad)
             self._cooldown_remaining = self.SWING_COOLDOWN_SECONDS
 
-        self.trail *= self.BEAM_DECAY
+        self.trail *= _decay_scale(self.BEAM_DECAY, dt)
         for k in list(self._beams.keys()):
             _, length = self.arm_ranges[k]
             beam = self._beams[k]
-            beam["pos"] += beam["speed"] * self.BEAM_SPEED_SCALE
+            beam["pos"] += beam["speed"] * self.BEAM_SPEED_SCALE * _rate_scale(dt)
             if beam["pos"] >= length - 1:
                 del self._beams[k]  # reached the tip - done
                 continue
@@ -613,12 +671,15 @@ class PulseEffect:
     config.py's heart_rate zone) - BPM_RANGE here must match that config
     so the two ends agree on what 0.0/1.0 mean.
 
-    TICK_SECONDS assumes the fixed 20Hz cadence every effect in this file
-    is driven at (main.py's led_loop) - effects don't receive an actual dt,
-    so this mirrors the same "fixed tick" assumption self.t increments
-    elsewhere in this file already make."""
+    `dt` is the real elapsed seconds since the last step() call (see
+    ASSUMED_TICK_SECONDS's module docstring) - phase advances by
+    dt/beat_period directly, a genuine "how many seconds passed / how many
+    seconds per beat" calculation, so bpm stays correct in real time
+    regardless of the actual loop rate. (Had grown a `* 0.1` fudge factor
+    on beat_period at one point, compensating for the loop running ~10x
+    slower than assumed instead of fixing that directly - removed now that
+    dt makes the underlying assumption correct instead of worked around.)"""
 
-    TICK_SECONDS = 0.05
     BPM_RANGE = (40.0, 180.0)
 
     def __init__(self, n_pixels, palette, idle_level=0.15, ease=0.15, decay_rate=6.0):
@@ -634,20 +695,20 @@ class PulseEffect:
         index = int(min(max(level, 0.0), 1.0) * (len(self.lut) - 1))
         return self.lut[index].astype(float)
 
-    def step(self, intensity: float = 0.0, bpm: float = 0.5):
+    def step(self, intensity: float = 0.0, bpm: float = 0.5, dt: float = ASSUMED_TICK_SECONDS):
         engaged = intensity > 0.5
         if not engaged:
             self.phase = 0.0  # next contact starts on a fresh beat, not mid-cycle
-            self.level += (self.idle_level - self.level) * self.ease
+            self.level += (self.idle_level - self.level) * _ema_rate(self.ease, dt)
             frame = np.tile(self._color_at_level(self.level), (self.n, 1))
             return np.clip(frame, 0, 255).astype(np.uint8)
 
         real_bpm = self.BPM_RANGE[0] + min(max(bpm, 0.0), 1.0) * (self.BPM_RANGE[1] - self.BPM_RANGE[0])
-        beat_period = 60.0 / real_bpm * 0.1
-        self.phase = (self.phase + self.TICK_SECONDS / beat_period) % 1.0
+        beat_period = 60.0 / real_bpm
+        self.phase = (self.phase + dt / beat_period) % 1.0
         pulse = np.exp(-self.phase * self.decay_rate)  # bright flash at phase 0, fading before the next beat
         target = self.idle_level + (1.0 - self.idle_level) * pulse
-        self.level += (target - self.level) * self.ease  # ease avoids a hard jump/flicker frame-to-frame
+        self.level += (target - self.level) * _ema_rate(self.ease, dt)  # ease avoids a hard jump/flicker frame-to-frame
         frame = np.tile(self._color_at_level(self.level), (self.n, 1))
         return np.clip(frame, 0, 255).astype(np.uint8)
 
@@ -696,7 +757,6 @@ class HeartRateEffect:
 
     HISTORY_SIZE = 20
     READING_SECONDS = 10.0
-    TICK_SECONDS = 0.05
     BPM_RANGE = (40.0, 180.0)  # must match config.yaml's heart_rate zone bpm {min, max}
     IDLE_FALLBACK_BPM = 70.0  # shown at rest before any reading's ever completed
     COLOUR_STEPS = 20  # beats to fully cycle the idle pulse's colour once around the palette, per Julia's "10 ticks" request
@@ -713,10 +773,17 @@ class HeartRateEffect:
         self._reading_elapsed = 0.0
         self._reading_samples = []
 
-    def _pulse_frame(self, real_bpm: float, white: bool):
-        beat_period = 60.0 / real_bpm * 0.1
+    def _pulse_frame(self, real_bpm: float, white: bool, dt: float):
+        # dt/beat_period is a genuine "real seconds elapsed / real seconds
+        # per beat" calculation, so bpm stays correct regardless of the
+        # actual loop rate - see ASSUMED_TICK_SECONDS's module docstring.
+        # (This briefly grew a `* 0.1` fudge on beat_period, compensating
+        # for the loop running ~10x slower than assumed instead of fixing
+        # that directly - removed now that dt makes the underlying
+        # assumption correct instead of worked around.)
+        beat_period = 60.0 / real_bpm
         prev_phase = self.phase
-        self.phase = (self.phase + self.TICK_SECONDS / beat_period) % 1.0
+        self.phase = (self.phase + dt / beat_period) % 1.0
         if self.phase < prev_phase:  # wrapped past 1.0 -> a new beat just started, colour steps here (see below)
             self.beat_count += 1
 
@@ -735,7 +802,7 @@ class HeartRateEffect:
 
         return np.tile(colour * level, (self.n, 1))
 
-    def step(self, intensity: float = 0.0, bpm: float = 0.5):
+    def step(self, intensity: float = 0.0, bpm: float = 0.5, dt: float = ASSUMED_TICK_SECONDS):
         engaged = intensity > 0.5
         rising_edge = engaged and not self._was_engaged
         self._was_engaged = engaged
@@ -750,15 +817,15 @@ class HeartRateEffect:
         if self._reading_active and engaged:
             real_bpm = self.BPM_RANGE[0] + min(max(bpm, 0.0), 1.0) * (self.BPM_RANGE[1] - self.BPM_RANGE[0])
             self._reading_samples.append(real_bpm)
-            frame = self._pulse_frame(real_bpm, white=True)
-            self._reading_elapsed += self.TICK_SECONDS
+            frame = self._pulse_frame(real_bpm, white=True, dt=dt)
+            self._reading_elapsed += dt
             if self._reading_elapsed >= self.READING_SECONDS:
                 self.history.append(sum(self._reading_samples) / len(self._reading_samples))
                 self._reading_active = False  # done - lift and reapply for another reading
         else:
             avg_bpm = sum(self.history) / len(self.history) if self.history else self.IDLE_FALLBACK_BPM
             real_bpm = min(max(avg_bpm, self.BPM_RANGE[0]), self.BPM_RANGE[1])
-            frame = self._pulse_frame(real_bpm, white=False)
+            frame = self._pulse_frame(real_bpm, white=False, dt=dt)
 
         return np.clip(frame, 0, 255).astype(np.uint8)
 
@@ -809,13 +876,14 @@ class TempHumidityBarEffect:
        down (COOLDOWN_RESET_FRACTION) so a hand left resting there doesn't
        refire every tick.
 
-    TICK_SECONDS assumes the same fixed 20Hz cadence every effect in this
-    file is driven at (main.py's output_loop) - effects don't receive an
-    actual dt, so the touch-window buffer and pulse decay both advance by
-    this fixed constant per step() call rather than by measured elapsed
-    time."""
+    `dt` (real elapsed seconds since the last step() call - see
+    ASSUMED_TICK_SECONDS's module docstring) drives both the touch-window
+    buffer and the pulse decay in genuine real time now, rather than
+    assuming a fixed 20Hz cadence - see _update_touch_pulse for how the
+    window itself changed from a fixed-length sample buffer (N samples,
+    which only means "TOUCH_WINDOW_SECONDS ago" if the loop is genuinely
+    running at the assumed rate) to tracking real elapsed time directly."""
 
-    TICK_SECONDS = 0.05
     CONDITION_ORDER = ("clear", "cloudy", "fog", "rain", "snow", "storm")  # must match weather.py's _CONDITION_ORDER
     # Fixed, distinct colour per condition, same order as CONDITION_ORDER -
     # "what's the weather" reads as an immediate colour identity at a
@@ -851,7 +919,13 @@ class TempHumidityBarEffect:
     def __init__(self, n_pixels, palette, background_level=0.05):
         self.n = n_pixels
         self.t = 0.0
-        self._touch_window = collections.deque(maxlen=max(1, int(self.TOUCH_WINDOW_SECONDS / self.TICK_SECONDS)))
+        # (elapsed_at_sample, temperature) pairs, oldest first - real-time
+        # replacement for the old fixed-length deque (see class docstring).
+        # Unbounded but self-pruning (see _update_touch_pulse), so it never
+        # actually grows past roughly TOUCH_WINDOW_SECONDS worth of samples
+        # regardless of how fast/slow step() is actually being called.
+        self._touch_window = collections.deque()
+        self._elapsed_total = 0.0
         self._touch_armed = True   # False right after firing, until the reading drops back down
         self._pulse_level = 0.0
 
@@ -892,13 +966,27 @@ class TempHumidityBarEffect:
         sparkle = self._sparkle(seed=13, x_scale=2.2, t_scale=6.0, power=3.0)
         return 1.0 + sparkle * pulse_level * self.TOUCH_BURST_MAX_BOOST
 
-    def _update_touch_pulse(self, temperature: float) -> float:
+    def _update_touch_pulse(self, temperature: float, dt: float) -> float:
         """Rising-edge detector on raw temperature - see class docstring on
         why this is a separate signal from `contrast` rather than reusing
         it. Returns the current pulse brightness (0..1, 1.0 right after a
-        fresh trigger, decaying back to 0)."""
-        self._touch_window.append(temperature)
-        delta = temperature - self._touch_window[0] if len(self._touch_window) == self._touch_window.maxlen else 0.0
+        fresh trigger, decaying back to 0). Window is real elapsed time now
+        (see __init__), not a fixed sample count - compare against the
+        oldest sample still within TOUCH_WINDOW_SECONDS of now, pruning
+        anything older every call."""
+        self._elapsed_total += dt
+        self._touch_window.append((self._elapsed_total, temperature))
+        while self._touch_window and self._elapsed_total - self._touch_window[0][0] > self.TOUCH_WINDOW_SECONDS:
+            self._touch_window.popleft()
+
+        # Only trust the delta once we've actually accumulated close to a
+        # full window - otherwise the "oldest sample" early on is really
+        # just "a moment ago", not genuinely TOUCH_WINDOW_SECONDS back, and
+        # would read as a huge/spurious rise.
+        if self._elapsed_total >= self.TOUCH_WINDOW_SECONDS and self._touch_window:
+            delta = temperature - self._touch_window[0][1]
+        else:
+            delta = 0.0
 
         if self._touch_armed and delta >= self.TOUCH_TRIGGER_DELTA:
             self._pulse_level = 1.0
@@ -906,18 +994,18 @@ class TempHumidityBarEffect:
         elif not self._touch_armed and delta <= self.TOUCH_TRIGGER_DELTA * self.COOLDOWN_RESET_FRACTION:
             self._touch_armed = True  # reading's dropped back down - a later rise counts as a new touch
 
-        decay_per_tick = self.TICK_SECONDS / self.PULSE_DECAY_SECONDS
-        self._pulse_level = max(0.0, self._pulse_level - decay_per_tick)
+        self._pulse_level = max(0.0, self._pulse_level - dt / self.PULSE_DECAY_SECONDS)
         return self._pulse_level
 
-    def step(self, temperature: float = 0.5, contrast: float = 0.0, condition: float = 0.0):
+    def step(self, temperature: float = 0.5, contrast: float = 0.0, condition: float = 0.0,
+              dt: float = ASSUMED_TICK_SECONDS):
         contrast = min(max(contrast, 0.0), 1.0)
-        self.t += 0.02  # slow, steady drift - condition's own `speed` (CONDITION_CHARACTER) scales how turbulent it looks on top of this
+        self.t += 0.02 * _rate_scale(dt)  # slow, steady drift - condition's own `speed` (CONDITION_CHARACTER) scales how turbulent it looks on top of this
 
         frame = self._ambient_base(self._condition_index(condition))
         frame = frame * self._shimmer_boost(contrast)[:, None]
 
-        pulse_level = self._update_touch_pulse(temperature)
+        pulse_level = self._update_touch_pulse(temperature, dt)
         if pulse_level > 0.0:
             frame = frame * self._touch_burst_boost(pulse_level)[:, None]
 

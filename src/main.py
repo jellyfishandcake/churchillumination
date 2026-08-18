@@ -504,7 +504,23 @@ async def output_loop(strips, dmx, zones_config, brightness: float = 1.0):
             n = _dmx_zone_pixel_count(output)
         zone_state[zone["name"]] = (None, None, None, np.zeros((n, 3), dtype=np.uint8), False)
 
+    # Real elapsed time passed into every effect's step() as `dt` (see
+    # led_effects.py's ASSUMED_TICK_SECONDS module docstring for why) -
+    # measured here, not assumed. Clamped so a single unusually slow tick
+    # (or the very first one, or the process resuming after being paused/
+    # debugged) can't make an effect suddenly jump forward several beats at
+    # once instead of just running a bit fast to catch up - a large enough
+    # cap that it never bites during genuinely normal operation, small
+    # enough that a real stall doesn't turn into a multi-second animation
+    # jump.
+    DT_MAX_SECONDS = 0.5
+    _last_tick_time = time.monotonic()
+
     while True:
+        now = time.monotonic()
+        dt = min(now - _last_tick_time, DT_MAX_SECONDS)
+        _last_tick_time = now
+
         led_frames = {}  # zone name -> frame, assembled into the full strip below, in led_ranges' order
         dmx_frames = {}  # zone name -> graded frame, published for admin.js's dmx zone swatches (not part of led_frame - dmx zones have no slot there)
         dmx_universe = [0] * dmx.universe_size if dmx is not None else None
@@ -534,7 +550,7 @@ async def output_loop(strips, dmx, zones_config, brightness: float = 1.0):
                 frame = last_frame
             else:
                 try:
-                    frame = effect.step(**sources)
+                    frame = effect.step(dt=dt, **sources)
                 except TypeError as exc:
                     print(f"[output_loop] zone {name!r}: effect {effect_name!r} doesn't accept sources {list(sources)} — holding last frame until the pick changes ({exc})")
                     frame = last_frame

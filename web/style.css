@@ -122,13 +122,12 @@ pre {
 #back-link a { color: var(--muted); }
 
 /* Shared by index.html's read-only zone display and admin.html's Zones
-   tab - see web/zoneUtils.js. paintSwatchStrip fades dim/off pixels toward
-   transparent (real per-pixel alpha, see its own docstring) - background
-   left transparent (2026-08-16, was an explicit #000 so off pixels read as
-   dark/off like an unlit LED) so the zone-card's own background shows
-   through instead. Trade-off: a genuinely dim/off pixel now blends toward
-   the page's cream --bg rather than reading as black/off - revert to
-   background: #000 if that washed-out-grey look becomes a problem again. */
+   tab - see web/zoneUtils.js's paintSwatchStrip for what's actually drawn:
+   any pixel with real colour (even dim) paints fully opaque, only an
+   exactly-[0,0,0] pixel paints transparent - this background stays
+   transparent (2026-08-16, was an explicit #000) so the zone-card's own
+   background shows through wherever a zone is genuinely off, rather than
+   a solid black rectangle. */
 .swatch-strip { width: 100%; height: 32px; image-rendering: pixelated; border-radius: 4px; margin-top: 0.5rem; display: block; background: transparent; }
 #zones-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; }
 .zone-card { background: var(--bg); border: 1px solid var(--hairline); border-radius: 6px; padding: 1rem; }
