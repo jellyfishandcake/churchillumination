@@ -151,14 +151,42 @@ async def sensor_loop(sensors, infer, activation_tracker, hr_tracker, motion_tra
         activation_tracker.timeout = server.runtime_settings["activation_timeout_seconds"]
         alpha = server.runtime_settings["smoothing_alpha"]
 
+        # Each sensor's read() is plain blocking hardware I/O (camera frame
+        # grab, I2C, serial) - calling them one after another with no
+        # await, as this used to, stalls this *entire* process for the sum
+        # of every sensor's read time, since asyncio is single-threaded and
+        # output_loop shares this same thread. Measured 2026-08-18: 2.1Hz
+        # actual output_loop rate against its assumed 20Hz - a ~9.5x
+        # slowdown that made every TICK_SECONDS-based effect (led_effects.py)
+        # run proportionally slower than intended with no error, just
+        # animations that "feel" wrong for no visible reason (a 70bpm heart
+        # pulse stretched to ~8s). run_in_executor moves each read() onto a
+        # background thread, and gather runs them concurrently - sensor_loop's
+        # own iteration time becomes roughly the slowest single sensor's read
+        # time instead of the sum of all of them, and critically frees this
+        # thread to keep servicing output_loop/the websocket server while
+        # those reads are in flight. return_exceptions=True preserves the
+        # previous per-sensor try/except - one sensor's failure still can't
+        # take down the others. NOTE: if central sensors sharing the Pi's I2C
+        # bus (motion/multisensor/heart_rate) ever start throwing I2C errors
+        # after this change, that'd mean truly concurrent bus access isn't as
+        # safely serialised by the kernel i2c-dev driver as expected here -
+        # not something confirmable without real hardware, worth watching for.
+        loop = asyncio.get_running_loop()
+        enabled_sensors = [
+            (name, s) for name, s in sensors.items()
+            if server.runtime_settings["sensors_enabled"].get(name, True)
+        ]
+        results = await asyncio.gather(
+            *(loop.run_in_executor(None, s.read) for _, s in enabled_sensors),
+            return_exceptions=True,
+        )
         raw = {}
-        for name, s in sensors.items():
-            if not server.runtime_settings["sensors_enabled"].get(name, True):
-                continue  # live-disabled via the admin terminal
-            try:
-                raw.update(s.read())
-            except Exception as exc:
-                print(f"[sensor_loop] {type(s).__name__}.read() raised even past its own fallback — skipping this tick: {exc}")
+        for (_, s), result in zip(enabled_sensors, results):
+            if isinstance(result, Exception):
+                print(f"[sensor_loop] {type(s).__name__}.read() raised even past its own fallback — skipping this tick: {result}")
+            else:
+                raw.update(result)
 
         # "activated" is derived from raw (not smoothed) presence, does not benefit
         # from smoothing. Presence at any of the 3 PIRs (central, via pir.py, plus
