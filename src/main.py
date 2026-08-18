@@ -14,6 +14,7 @@ All four share one asyncio event loop. Nothing blocks the others.
 """
 import asyncio
 import pathlib
+import threading
 import time
 
 import numpy as np
@@ -40,6 +41,13 @@ from src.output.effects import registry
 from src.output.effects.colour_palette import PALETTES
 from src.output.effects.led_effects import apply_gamma
 from src.net import server
+
+# Sensor config-block names (see build_sensors below) that talk to the Pi's
+# I2C bus: motion.py's MLX90640, multisensor.py's BME280+LTR559,
+# heart_rate.py's MAX30102 - see sensor_loop's _read for why these three, and
+# only these three, need to be serialised against each other.
+_I2C_SENSOR_NAMES = frozenset({"motion", "multisensor", "heart_rate"})
+_I2C_BUS_LOCK = threading.Lock()
 
 
 def build_sensors(config: dict) -> dict:
@@ -167,18 +175,35 @@ async def sensor_loop(sensors, infer, activation_tracker, hr_tracker, motion_tra
         # thread to keep servicing output_loop/the websocket server while
         # those reads are in flight. return_exceptions=True preserves the
         # previous per-sensor try/except - one sensor's failure still can't
-        # take down the others. NOTE: if central sensors sharing the Pi's I2C
-        # bus (motion/multisensor/heart_rate) ever start throwing I2C errors
-        # after this change, that'd mean truly concurrent bus access isn't as
-        # safely serialised by the kernel i2c-dev driver as expected here -
-        # not something confirmable without real hardware, worth watching for.
+        # take down the others.
+        #
+        # _I2C_BUS_LOCK (below) serialises just motion/multisensor/heart_rate
+        # against EACH OTHER, since all three talk to the Pi's I2C bus - found
+        # 2026-08-18, one session after the concurrency change above: genuinely
+        # concurrent reads let one sensor's multi-byte register/frame read
+        # interleave with another's mid-transaction (the kernel's i2c-dev
+        # driver serialises one physical bus transfer at a time, but not a
+        # whole logical read spanning several transfers), corrupting readings
+        # - which then fed garbled data into every effect reading from them
+        # (weather's temperature, ambient's lux/motion, heart_rate's bpm),
+        # showing up as erratic-looking LEDs across multiple zones at once,
+        # reported back as "all the LEDs behaving strangely". Non-I2C sensors
+        # (audio, accel_stick's serial, nodes' MQTT, weather's cached
+        # background thread) still run fully concurrently with everything.
         loop = asyncio.get_running_loop()
         enabled_sensors = [
             (name, s) for name, s in sensors.items()
             if server.runtime_settings["sensors_enabled"].get(name, True)
         ]
+
+        def _read(name, s):
+            if name in _I2C_SENSOR_NAMES:
+                with _I2C_BUS_LOCK:
+                    return s.read()
+            return s.read()
+
         results = await asyncio.gather(
-            *(loop.run_in_executor(None, s.read) for _, s in enabled_sensors),
+            *(loop.run_in_executor(None, _read, name, s) for name, s in enabled_sensors),
             return_exceptions=True,
         )
         raw = {}
@@ -594,26 +619,34 @@ async def output_loop(strips, dmx, zones_config, brightness: float = 1.0):
             length = local_end - local_start
             strip_buffers[strip_name][local_start:local_end] = hardware_frame[offset:offset + length]
             offset += length
-        # Same blocking-I/O issue as sensor_loop's read() calls, and the
-        # dominant one in practice (2026-08-18): LEDStrip.render_pixels is a
-        # blocking spidev write, and DMXInterface.send_channels blocks for a
-        # real ~1ms break plus the wire time (and often real driver-level
-        # latency well beyond that, on cheap USB-serial dongles) to write +
-        # flush() a full 513-byte frame every call. Calling these
-        # synchronously here - once per tick, one after another - stalled
-        # this whole process the same way sensor reads did, and was the
-        # larger contributor once sensor reads stopped being the bottleneck.
-        # run_in_executor + gather moves them onto background threads and
-        # overlaps them, instead of summing each hardware write's real time
-        # directly onto every single tick.
+        # DMXInterface.send_channels is a blocking ~1ms break plus the wire
+        # time (and often real driver-level latency well beyond that on cheap
+        # USB-serial dongles) to write + flush() a full 513-byte frame every
+        # call - confirmed 2026-08-18 as the dominant blocking cost in this
+        # loop, well above either LEDStrip.render_pixels call. Runs on its
+        # own thread so it overlaps with the strip writes below instead of
+        # stalling the whole process for its ~23ms+.
+        #
+        # The two strip writes themselves stay plain and sequential, NOT also
+        # parallelised against each other - a follow-up same day found that
+        # running heart_rate_strip (SPI0) and accelerometer_strip (SPI1)
+        # concurrently made accelerometer_strip glitch badly while DMX (on
+        # entirely separate hardware) stayed fine. SPI1 is the Pi's auxiliary
+        # SPI peripheral (spi-bcm2835aux) - simpler than the main SPI0
+        # controller, no proper DMA support, more sensitive to being driven
+        # at the exact same instant as something else. Each strip write is
+        # only ~2-5ms anyway (60-94 pixels at 1-8MHz), so there was never a
+        # real performance reason to parallelise them - the actual win was
+        # always overlapping the ~23ms DMX write with the cheap strip writes,
+        # which this keeps.
         loop = asyncio.get_running_loop()
-        write_calls = [
-            loop.run_in_executor(None, strip.render_pixels, strip_buffers[strip_name])
-            for strip_name, strip in strips.items()
-        ]
-        if dmx_universe is not None:
-            write_calls.append(loop.run_in_executor(None, dmx.send_channels, dmx_universe))
-        await asyncio.gather(*write_calls)
+        dmx_task = loop.run_in_executor(None, dmx.send_channels, dmx_universe) if dmx_universe is not None else None
+
+        for strip_name, strip in strips.items():
+            strip.render_pixels(strip_buffers[strip_name])
+
+        if dmx_task is not None:
+            await dmx_task
 
         server.latest["led_frame"] = led_frame
         # {zone_name: [[r,g,b], ...]} - separate from led_frame (which is one
