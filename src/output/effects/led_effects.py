@@ -643,7 +643,7 @@ class PulseEffect:
             return np.clip(frame, 0, 255).astype(np.uint8)
 
         real_bpm = self.BPM_RANGE[0] + min(max(bpm, 0.0), 1.0) * (self.BPM_RANGE[1] - self.BPM_RANGE[0])
-        beat_period = 60.0 / real_bpm
+        beat_period = 60.0 / real_bpm * 0.1
         self.phase = (self.phase + self.TICK_SECONDS / beat_period) % 1.0
         pulse = np.exp(-self.phase * self.decay_rate)  # bright flash at phase 0, fading before the next beat
         target = self.idle_level + (1.0 - self.idle_level) * pulse
@@ -699,7 +699,7 @@ class HeartRateEffect:
     TICK_SECONDS = 0.05
     BPM_RANGE = (40.0, 180.0)  # must match config.yaml's heart_rate zone bpm {min, max}
     IDLE_FALLBACK_BPM = 70.0  # shown at rest before any reading's ever completed
-    COLOUR_STEPS = 10  # beats to fully cycle the idle pulse's colour once around the palette, per Julia's "10 ticks" request
+    COLOUR_STEPS = 20  # beats to fully cycle the idle pulse's colour once around the palette, per Julia's "10 ticks" request
 
     def __init__(self, n_pixels, palette, idle_level=0.15):
         self.n = n_pixels
@@ -714,7 +714,7 @@ class HeartRateEffect:
         self._reading_samples = []
 
     def _pulse_frame(self, real_bpm: float, white: bool):
-        beat_period = 60.0 / real_bpm
+        beat_period = 60.0 / real_bpm * 0.1
         prev_phase = self.phase
         self.phase = (self.phase + self.TICK_SECONDS / beat_period) % 1.0
         if self.phase < prev_phase:  # wrapped past 1.0 -> a new beat just started, colour steps here (see below)
