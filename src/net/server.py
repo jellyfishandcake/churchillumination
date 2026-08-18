@@ -117,7 +117,7 @@ ADMIN_ACTIONS = {
 }
 
 PALETTE_NAME_RE = re.compile(r"^[A-Za-z0-9_\- ]{1,40}$")
-MAX_IMAGE_DATA_URL_CHARS = 8_000_000  # comfortably under max_size below, after base64 overhead
+MAX_IMAGE_DATA_URL_CHARS = 5_000_000  # genuinely comfortably under max_size below (6MiB) - was 8_000_000, actually ABOVE the 6*1024*1024=6_291_456 byte transport limit despite the old comment's claim (found 2026-08-18) - a data URL in that gap would pass this check then blow max_size instead, which closes the whole websocket connection rather than just rejecting the message
 
 # Stricter than PALETTE_NAME_RE (no spaces) since this becomes a filename,
 # not just a display label - see the upload_sketch handler below.
@@ -314,13 +314,27 @@ async def _handle_control(websocket, payload: dict) -> None:
         print(f"[server] saved sketch {name!r}")
 
     elif action == "set_shadow_backdrop":
+        # Every rejection branch below now sends a direct control_ack back to
+        # the uploading client (found 2026-08-18: they used to just print()
+        # server-side and return, leaving backdrop.js's "Uploading…" state
+        # waiting forever for a version bump that would never come on a
+        # rejected upload - no error, no way to know what happened, indistinguishable
+        # from the server just not responding at all).
         image_data_url = payload.get("image_data_url")
 
         if not (isinstance(image_data_url, str) and image_data_url.startswith("data:image/")):
             print("[server] rejected set_shadow_backdrop: image_data_url missing/malformed")
+            await websocket.send(json.dumps({"control_ack": {
+                "action": "set_shadow_backdrop", "ok": False,
+                "error": "No image received - try choosing the photo again.",
+            }}))
             return
         if len(image_data_url) > MAX_IMAGE_DATA_URL_CHARS:
             print("[server] rejected set_shadow_backdrop: image_data_url too large")
+            await websocket.send(json.dumps({"control_ack": {
+                "action": "set_shadow_backdrop", "ok": False,
+                "error": "Photo is too large even after downscaling - try a smaller or simpler photo.",
+            }}))
             return
 
         _header, _, b64_data = image_data_url.partition(",")
@@ -328,6 +342,10 @@ async def _handle_control(websocket, payload: dict) -> None:
             image_bytes = base64.b64decode(b64_data)
         except ValueError:  # binascii.Error (a ValueError subclass) on malformed base64
             print("[server] rejected set_shadow_backdrop: image_data_url isn't valid base64")
+            await websocket.send(json.dumps({"control_ack": {
+                "action": "set_shadow_backdrop", "ok": False,
+                "error": "Upload was corrupted in transit - try again.",
+            }}))
             return
 
         # Single current slot, not one file per upload - web/shadow.html
@@ -345,6 +363,7 @@ async def _handle_control(websocket, payload: dict) -> None:
         # actually changes and the browser doesn't serve a stale cached copy.
         latest["shadow_backdrop"] = {"version": latest["shadow_backdrop"]["version"] + 1}
         print("[server] saved new shadow backdrop")
+        await websocket.send(json.dumps({"control_ack": {"action": "set_shadow_backdrop", "ok": True}}))
 
     else:
         print(f"[server] ignoring unknown control action: {action!r}")

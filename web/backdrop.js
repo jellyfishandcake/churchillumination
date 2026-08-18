@@ -55,6 +55,18 @@ let lastKnownVersion = 0;
 let awaitingVersion = null; // set while this tab's own upload is in flight
 
 const wsHandle = window.connectWS((data) => {
+  // Rejections (bad/oversized/corrupted image) never bump shadow_backdrop's
+  // version, so without this the button-disabled "Uploading…" state used to
+  // just hang forever with no explanation - see server.py's set_shadow_backdrop.
+  const ack = data.control_ack;
+  if (ack && ack.action === "set_shadow_backdrop" && !ack.ok) {
+    awaitingVersion = null;
+    uploadButton.disabled = false;
+    jobStatusEl.className = "error";
+    jobStatusEl.textContent = ack.error || "Upload failed.";
+    return;
+  }
+
   const backdrop = data.shadow_backdrop;
   if (!backdrop) return;
   lastKnownVersion = backdrop.version;
