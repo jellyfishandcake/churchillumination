@@ -181,7 +181,12 @@ DEFAULTS = {
     "admin": {"passcode": "changeme"},
     "sensors": {
         "audio": {"enabled": True},
-        "motion": {"enabled": True},
+        # human_temp_range_low/high (°C, absolute) - the MLX90640 thermal
+        # camera's shadow-cast blob mask ramps 0..1 across this band, see
+        # motion.py's MotionSensor docstring. low lowered 27.0->24.0
+        # (2026-08-18, still by feel, no real calibration data yet) -
+        # retune with `python -m tools.calibrate_sensor motion --live`.
+        "motion": {"enabled": True, "human_temp_range_low": 24.0, "human_temp_range_high": 34.0},
         "multisensor": {"enabled": True},
         "pir": {"enabled": True, "gpio_pin": 4},
         # Waveshare HMMD mmWave presence sensor (S3KM1110, 24GHz FMCW radar)

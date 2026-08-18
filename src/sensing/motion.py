@@ -58,10 +58,16 @@ class MotionSensor(Sensor):
     at once, which an absolute threshold simply can't do, since it doesn't
     depend on any history at all - a pixel is either in the human range or
     it isn't, tick to tick. human_temp_range is a placeholder (a clothed/
-    skin surface reading, room ambient assumed well below it) - calibrate
-    with `python -m tools.calibrate_sensor motion --live` and watch
+    skin surface reading, room ambient assumed well below it) - low end
+    lowered 27.0->24.0 (2026-08-18, still by feel, no real calibration data
+    yet) since 27.0 risked missing a clothed/distant/cooler-reading person
+    entirely as "just room temperature" rather than just under-including
+    them at the edges. Configurable via config.yaml's sensors.motion.
+    human_temp_range_low/high (see main.py's build_sensors) specifically so
+    it doesn't need a code redeploy to retune - calibrate with
+    `python -m tools.calibrate_sensor motion --live` and watch
     thermal_frame_min/max/mean with the room empty vs a person in frame,
-    then set this to comfortably above the empty-room max.
+    then set the low end to comfortably above the empty-room max.
 
     webcam_blob_threshold keeps the OLD baseline-diff approach (dev-only
     fallback, not deployment hardware) - a fixed "brightness above N" cutoff
@@ -78,7 +84,7 @@ class MotionSensor(Sensor):
     BASELINE_ALPHA = 0.005
 
     def __init__(self, sensitivity: float = 10.0, webcam_sensitivity: float = 8.0,
-                 human_temp_range: tuple = (27.0, 34.0), webcam_blob_threshold: tuple = (15.0, 60.0)):
+                 human_temp_range: tuple = (24.0, 34.0), webcam_blob_threshold: tuple = (15.0, 60.0)):
         super().__init__()
         self.sensitivity = sensitivity
         self.webcam_sensitivity = webcam_sensitivity

@@ -68,7 +68,10 @@ def build_sensors(config: dict) -> dict:
     if sensors_config["audio"]["enabled"]:
         sensors["audio"] = AudioSensor()
     if sensors_config["motion"]["enabled"]:
-        sensors["motion"] = MotionSensor()
+        motion_config = sensors_config["motion"]
+        sensors["motion"] = MotionSensor(
+            human_temp_range=(motion_config["human_temp_range_low"], motion_config["human_temp_range_high"]),
+        )
     if sensors_config["multisensor"]["enabled"]:
         sensors["multisensor"] = MultisensorStick()
     if sensors_config["pir"]["enabled"]:
