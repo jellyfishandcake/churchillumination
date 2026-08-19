@@ -252,14 +252,39 @@ async def _handle_control(websocket, payload: dict) -> None:
         n_colors = payload.get("n_colors")
         photo_colors = payload.get("photo_colors")
 
+        # Below: every rejection used to just print() server-side and return,
+        # leaving contribute.js's "Building…" state hanging forever with no
+        # explanation - the browser had no way to tell "rejected" apart from
+        # "still queued" (reported as palette builds silently never
+        # finishing for some inputs, e.g. an out-of-range colour count).
+        # contribute.js already renders palette_job.status == "error" (it
+        # has to, for the genuine post-build failure case), so reusing that
+        # same field here for validation failures needs no new client code -
+        # except "already processing", which must NOT stomp latest
+        # ["palette_job"] since that would show a false error for whichever
+        # job actually IS still running; that one gets a direct per-
+        # connection control_ack instead, same pattern set_shadow_backdrop
+        # already uses for its own rejections.
         if latest["palette_job"]["status"] == "processing":
             print("[server] rejected build_palette: a job is already processing")
+            await websocket.send(json.dumps({"control_ack": {
+                "action": "build_palette", "ok": False,
+                "error": "A palette build is already in progress - wait for it to finish.",
+            }}))
             return
         if not (isinstance(name, str) and PALETTE_NAME_RE.match(name)):
             print(f"[server] rejected build_palette: invalid name {name!r}")
+            latest["palette_job"] = {
+                "status": "error", "name": name, "hex_colors": None,
+                "error": "Invalid palette name.", "overwritten": False,
+            }
             return
         if not (isinstance(image_data_url, str) and image_data_url.startswith("data:image/")):
             print("[server] rejected build_palette: image_data_url missing/malformed")
+            latest["palette_job"] = {
+                "status": "error", "name": name, "hex_colors": None,
+                "error": "No image received - try choosing the photo again.", "overwritten": False,
+            }
             return
         if len(image_data_url) > MAX_IMAGE_DATA_URL_CHARS:
             print("[server] rejected build_palette: image_data_url too large")
@@ -270,12 +295,24 @@ async def _handle_control(websocket, payload: dict) -> None:
             return
         if not isinstance(use_ai, bool):
             print("[server] rejected build_palette: use_ai not a bool")
+            latest["palette_job"] = {
+                "status": "error", "name": name, "hex_colors": None,
+                "error": "Invalid request - try reloading the page.", "overwritten": False,
+            }
             return
         if not (isinstance(n_colors, int) and not isinstance(n_colors, bool) and 2 <= n_colors <= 8):
             print("[server] rejected build_palette: n_colors out of range")
+            latest["palette_job"] = {
+                "status": "error", "name": name, "hex_colors": None,
+                "error": "Colours to extract must be a whole number between 2 and 8.", "overwritten": False,
+            }
             return
         if not (isinstance(photo_colors, int) and not isinstance(photo_colors, bool) and 1 <= photo_colors <= 4):
             print("[server] rejected build_palette: photo_colors out of range")
+            latest["palette_job"] = {
+                "status": "error", "name": name, "hex_colors": None,
+                "error": "Colours from photo must be a whole number between 1 and 4.", "overwritten": False,
+            }
             return
 
         palette_job_request = {

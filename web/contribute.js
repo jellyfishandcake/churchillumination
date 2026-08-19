@@ -48,6 +48,23 @@ aiToggle.addEventListener("change", () => {
   photocolorsField.style.display = aiToggle.checked ? "flex" : "none";
 });
 
+// <input type="number" min max> doesn't stop someone typing "0", "-3", "3.5"
+// or leaving it blank - clamp to a positive integer in range on blur so
+// what's on screen always matches what build-button's click handler below
+// will actually send. Server-side (server.py's build_palette handler)
+// still re-validates and is the real guard; this is just so the common
+// case (typo, empty field, scroll-wheel drag past the end) doesn't silently
+// produce a request the server rejects with no feedback.
+function clampToStep(input) {
+  const min = Number(input.min);
+  const max = Number(input.max);
+  let value = Math.round(Number(input.value));
+  if (!Number.isFinite(value)) value = min;
+  input.value = Math.min(max, Math.max(min, value));
+}
+ncolorsInput.addEventListener("blur", () => clampToStep(ncolorsInput));
+photocolorsInput.addEventListener("blur", () => clampToStep(photocolorsInput));
+
 function showSwatches(hexColors) {
   swatchPreview.innerHTML = "";
   for (const hex of hexColors || []) {
@@ -58,6 +75,20 @@ function showSwatches(hexColors) {
 }
 
 const wsHandle = window.connectWS((data) => {
+  // Only build_palette's "already processing" rejection uses this path -
+  // every other rejection reuses palette_job's own "error" status below,
+  // since contribute.js already renders that for the post-build failure
+  // case too. See server.py's build_palette handler for why this one
+  // specifically can't just set palette_job to "error" (would stomp
+  // whichever job actually is still running).
+  const ack = data.control_ack;
+  if (ack && ack.action === "build_palette" && !ack.ok) {
+    buildButton.disabled = false;
+    jobStatusEl.className = "error";
+    jobStatusEl.textContent = ack.error || "Build failed.";
+    return;
+  }
+
   const job = data.palette_job;
   if (!job) return;
 
@@ -95,6 +126,9 @@ buildButton.addEventListener("click", () => {
   jobStatusEl.className = "";
   jobStatusEl.textContent = "Building…";
   swatchPreview.innerHTML = "";
+
+  clampToStep(ncolorsInput);
+  clampToStep(photocolorsInput);
 
   wsHandle.send({
     control: {
