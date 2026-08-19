@@ -408,12 +408,12 @@ async def _handle_control(websocket, payload: dict) -> None:
         # - a preset is really just "server-supplied bytes instead of
         # visitor-supplied bytes" through the same set-backdrop pipeline, so
         # shadow.js/serve_static need no changes at all for this to work.
-        # PRESET_BACKDROPS is a fixed allowlist (not an arbitrary filename
-        # from the client) specifically so this can't be used to read any
-        # file on disk other than the handful of backdrops actually meant
-        # to be offered here.
+        # PRESET_IDS is a fixed allowlist (not an arbitrary filename from
+        # the client) specifically so this can't be used to read any file
+        # on disk other than the handful of backdrops actually meant to be
+        # offered here.
         preset = payload.get("preset")
-        if preset not in PRESET_BACKDROPS:
+        if preset not in PRESET_IDS:
             print(f"[server] rejected set_shadow_backdrop_preset: unknown preset {preset!r}")
             await websocket.send(json.dumps({"control_ack": {
                 "action": "set_shadow_backdrop_preset", "ok": False,
@@ -421,9 +421,9 @@ async def _handle_control(websocket, payload: dict) -> None:
             }}))
             return
 
-        preset_path = PRESETS_DIR / PRESET_BACKDROPS[preset]
-        if not preset_path.is_file():
-            print(f"[server] rejected set_shadow_backdrop_preset: {preset_path} missing on disk")
+        preset_path = _find_preset_file(preset)
+        if preset_path is None:
+            print(f"[server] rejected set_shadow_backdrop_preset: no image file found for {preset!r} under {PRESETS_DIR}")
             await websocket.send(json.dumps({"control_ack": {
                 "action": "set_shadow_backdrop_preset", "ok": False,
                 "error": "That preset's image file hasn't been added to the server yet.",
@@ -471,21 +471,35 @@ UPLOADS_DIR = WEB_DIR / "uploads"
 # A handful of ready-made shadow backdrops (see set_shadow_backdrop_preset
 # above) - checked into the repo under web/presets/ (unlike UPLOADS_DIR,
 # which is visitor-generated and gitignored), so they're always available
-# regardless of what anyone's uploaded. PRESET_BACKDROPS is a fixed id ->
-# filename allowlist, not a directory listing, so a client can only ever
-# select one of these specific files, never an arbitrary path.
-#
-# Placeholder filenames only - nobody's added real photos yet. Drop actual
-# .jpg files at these exact paths (web/presets/college_1.jpg etc.) and the
-# preset picker on backdrop.html starts working with no code changes; until
-# then, selecting one just returns a clean "not available yet" error rather
-# than crashing (see the is_file() check above).
+# regardless of what anyone's uploaded. PRESET_IDS is a fixed allowlist of
+# ids, not a directory listing, so a client can only ever select one of
+# these specific presets, never an arbitrary path.
 PRESETS_DIR = WEB_DIR / "presets"
-PRESET_BACKDROPS = {
-    "college_1": "college_1.jpg",
-    "college_2": "college_2.jpg",
-    "college_3": "college_3.jpg",
-}
+PRESET_IDS = {"college_1", "college_2", "college_3"}
+# Case/extension-insensitive on purpose - the same 3 image extensions
+# MIME_TYPES already serves. Real mismatch hit 2026-08-19: the first real
+# photos dropped in were college_1.jpeg, college_2.jpeg, college_3.JPG,
+# none of which matched an earlier version of this code that only ever
+# looked for an exact "college_N.jpg". Windows (dev laptop) treats
+# filenames case-insensitively, so a casing mismatch like college_3.JPG
+# can silently work there and then silently fail once actually deployed to
+# the Pi (Linux, case-sensitive filesystem) - _find_preset_file below scans
+# and compares lowercase specifically to avoid that whole class of bug
+# recurring with the next photo someone drops in, not just this one
+# instance of it.
+PRESET_EXTENSIONS = (".jpg", ".jpeg", ".png")
+
+
+def _find_preset_file(preset_id: str):
+    """Returns the Path to preset_id's image file under PRESETS_DIR
+    (whatever its actual filename/casing/extension is), or None if it
+    hasn't been added yet."""
+    if not PRESETS_DIR.is_dir():
+        return None
+    for entry in PRESETS_DIR.iterdir():
+        if entry.is_file() and entry.stem.lower() == preset_id.lower() and entry.suffix.lower() in PRESET_EXTENSIONS:
+            return entry
+    return None
 
 # latest["shadow_backdrop"]["version"] starts at 0 (see its definition near
 # the top of this file) meaning "nobody's uploaded a backdrop yet" -
@@ -550,9 +564,20 @@ async def serve_static(connection, request):
             b"Forbidden\n",
         )
  
+    if not file_path.is_file() and path.startswith("/presets/"):
+        # backdrop.html's thumbnails hardcode e.g. "/presets/college_1.jpg"
+        # in static markup, which can't know the real file's actual
+        # extension/casing (see _find_preset_file's own comment on why that
+        # can differ) - resolve through the same lookup
+        # set_shadow_backdrop_preset uses instead of requiring the two to
+        # somehow stay in sync by hand.
+        resolved = _find_preset_file(file_path.stem)
+        if resolved is not None:
+            file_path = resolved
+
     if not file_path.is_file():
         return None  # Let websockets handle it (probably a WS upgrade request)
- 
+
     content = file_path.read_bytes()
     mime = MIME_TYPES.get(file_path.suffix, "application/octet-stream")
     return Response(
