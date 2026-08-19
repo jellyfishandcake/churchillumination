@@ -17,7 +17,7 @@ leds:
   # physical chain anymore - see "strips" below for the real per-chain
   # hardware config. Keep this equal to the sum of every led zone's
   # output.pixels: heart_rate 60 (1m strip) + accelerometer 94 (5 arm
-  # segments, 19+17+20+16+22 - see ShakeFireworkEffect.ARM_LENGTHS). temp_humidity is a DMX
+  # segments, 19+17+20+16+22 - see ShakeFireworkEffect.ARM_LENGTHS). weather is a DMX
   # bar, not counted here.
   num_pixels: 154
   layout: strip   # strip|grid|ring — only "strip" is implemented so far (see web/pixelMap.js)
@@ -117,9 +117,9 @@ leds:
       # 16 is anything but a guess - confirm with test_dmx.py bar --start 1
       # --count 16 the same way.
       output: {type: dmx, start_address: 1, channels: [r, g, b], pixels: 16}
-    - name: temp_humidity
+    - name: weather   # renamed from temp_humidity 2026-08-19
       effect: temp_humidity_bar   # rebuilt 2026-08-18 into a three-layer ambient/shimmer/touch design, see led_effects.py's TempHumidityBarEffect docstring
-      palette: winter   # unused by this effect (colour comes from CONDITION_COLOURS per condition) - kept because every zone's effect is constructed as effect_class(n_pixels, palette)
+      palette: winter   # ambient base colour still comes from CONDITION_COLOURS per condition, not this - but the shimmer/touch-burst layers DO sample this palette now (2026-08-19, see TempHumidityBarEffect._vivid_boost), so it's no longer purely decorative
       source:
         temperature: {path: sensors.temperature, min: 15, max: 30}   # indoor reading - drives the touch-react rising-edge detector, see TempHumidityBarEffect.TOUCH_TRIGGER_DELTA
         contrast: {path: sensors.indoor_outdoor_temp_diff, min: 0, max: 15}   # indoor/outdoor divergence, drives the shimmer layer - see main.py's sensor_loop

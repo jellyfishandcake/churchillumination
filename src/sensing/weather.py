@@ -32,7 +32,7 @@ STALE_AFTER_SECONDS = FETCH_INTERVAL_SECONDS * 3  # tolerate a couple of missed 
 # table. See https://open-meteo.com/en/docs for the full code list. Order
 # matters here (not just naming): TempHumidityBarEffect's `condition` source
 # arrives as this list's index rescaled to 0..1 (see _condition_code below
-# and config.yaml's temp_humidity zone source) - reordering this list
+# and config.yaml's weather zone source) - reordering this list
 # without updating led_effects.py's matching CONDITION_ORDER would silently
 # relabel every effect's condition-colour/character branch.
 _CONDITION_BUCKETS = [

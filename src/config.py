@@ -18,7 +18,7 @@ DEFAULTS = {
         # one physical chain anymore - see "strips" below for that. Keep
         # this equal to the sum of every led zone's output.pixels: heart_rate
         # 60 + accelerometer 94 (5 arm segments, 19+17+20+16+22 - see
-        # ShakeFireworkEffect.ARM_LENGTHS). temp_humidity is a DMX bar, not
+        # ShakeFireworkEffect.ARM_LENGTHS). weather is a DMX bar, not
         # counted here.
         "num_pixels": 154,
         "layout": "strip",
@@ -101,7 +101,7 @@ DEFAULTS = {
                 "output": {"type": "dmx", "start_address": 1, "channels": ["r", "g", "b"], "pixels": 8},
             },
             {
-                "name": "temp_humidity",
+                "name": "weather",  # renamed from temp_humidity 2026-08-19
                 # Was temp_humidity_matrix on a spatial LED panel idea - the
                 # physical build settled on a DMX bar instead (RGBW) - see
                 # led_effects.py's TempHumidityBarEffect docstring. Rebuilt

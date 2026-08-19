@@ -794,10 +794,13 @@ class TempHumidityBarEffect:
     2. CONTRAST GLIMMER (continuous) - `contrast` (how far indoor
        temperature has drifted from outdoor, main.py's
        indoor_outdoor_temp_diff) fades in a second, sparser, faster
-       twinkle noise field on top as a brightness+saturation boost (never
-       darkens/desaturates - see _vivid_boost; brightness-only until
-       2026-08-19, when that read as "just turns white" on cloudy/fog/
-       snow's already fairly desaturated base colours). Indoor ~= outdoor:
+       twinkle noise field on top as a brightness boost blended toward a
+       colour sampled from this zone's own palette (never darkens - see
+       _vivid_boost; brightness-only until 2026-08-19, when that read as
+       "just turns white" on cloudy/fog/snow's already fairly desaturated
+       base colours; briefly a self-referential saturation push after
+       that, replaced same day with an actual palette-sampled colour per
+       "take colours from palette" feedback). Indoor ~= outdoor:
        bar stays calm. Diverged: visibly glittery. This does NOT try to
        also be the touch reaction (see
        layer 3) - on a hot day outdoor temperature can already sit near
@@ -856,13 +859,6 @@ class TempHumidityBarEffect:
         "storm": (1.0, 0.5, 0.75),
     }
     SHIMMER_MAX_BOOST = 0.6      # brightness boost added at contrast=1.0 (0 = no glimmer at all)
-    # How much extra saturation-push rides along with the brightness boost
-    # above (both layer 2 and layer 3 - see _vivid_boost) - 1.0 means the
-    # saturation push grows at the same rate as the brightness one; higher
-    # = shimmer reads as more "colour gets richer", lower = closer to the
-    # old pure-brightness behaviour. Untuned placeholder, verify on real
-    # hardware especially against fog/snow's similarly pale base colours.
-    SATURATION_BOOST_RATIO = 1.0
     TOUCH_WINDOW_SECONDS = 6.0   # how far back the touch-delta looks
     TOUCH_TRIGGER_DELTA = 0.12   # rise (in the 0..1 rescaled temperature units) over that window that counts as "someone touched the sensor"
     COOLDOWN_RESET_FRACTION = 0.5  # re-arms once the rise drops back below TOUCH_TRIGGER_DELTA * this - stops one long touch refiring every tick
@@ -872,6 +868,12 @@ class TempHumidityBarEffect:
     def __init__(self, n_pixels, palette, background_level=0.05):
         self.n = n_pixels
         self.t = 0.0
+        # Was unused by this effect entirely until 2026-08-19 (condition
+        # colour/character were always the fixed CONDITION_COLOURS/
+        # CONDITION_CHARACTER dicts below, independent of whatever palette
+        # the zone happens to be assigned) - now sampled by _vivid_boost
+        # for the shimmer/touch-burst layers' colour, see its own comment.
+        self.lut = _palette_lut(palette)
         # (elapsed_at_sample, temperature) pairs, oldest first - real-time
         # replacement for the old fixed-length deque (see class docstring).
         # Unbounded but self-pruning (see _update_touch_pulse), so it never
@@ -908,26 +910,35 @@ class TempHumidityBarEffect:
 
     def _vivid_boost(self, frame: np.ndarray, sparkle: np.ndarray, max_boost: float) -> np.ndarray:
         """Shared by both layer 2 (contrast shimmer) and layer 3 (touch
-        burst) - boosts brightness AND saturation together, not brightness
-        alone. Added 2026-08-19: the original pure-brightness version
-        scaled every channel by the same factor, which preserves a
-        colour's saturation/hue exactly rather than adding any - fine for
-        a strongly saturated base like "clear"'s golden (255,200,80), but
-        on cloudy's own fairly desaturated blue-grey (140,150,160) a
-        brightness-only sparkle just reads as "this spot got paler", which
-        human colour perception reads as "turning white" specifically on
-        an already low-chroma colour (real complaint: "the shimmer effect
-        is white ... super hard to see for cloudy conditions" - fog/snow's
-        bases are similarly desaturated and would hit the same problem,
-        just not yet reported). Pushing each pixel away from its own luma
-        (mean of R/G/B) as well as brightening it means a sparkle reads as
-        "this spot got richer/more vivid" instead, which stays visible
-        regardless of how saturated the base colour already is. >= base
-        colour always (both factors are >= 1.0) - glimmer only ever adds
-        on top of the ambient base, never darkens/desaturates it."""
+        burst) - boosts brightness AND blends toward a colour sampled from
+        this zone's own palette (self.lut - previously totally unused by
+        this effect, see __init__'s own comment), not brightness alone.
+
+        First version (2026-08-19) pushed each pixel away from its own
+        luma instead - fixed the original pure-brightness sparkle reading
+        as "turning white" on cloudy's desaturated base colour, but per
+        explicit "take colours from palette" follow-up feedback, this
+        replaces that with blending toward an actual palette colour
+        instead: a genuinely different hue reads as a distinct glint
+        regardless of the base's own saturation, and it means the shimmer
+        visibly carries whatever palette this zone is assigned (autumn,
+        winter, ...) rather than always being "a richer version of
+        whatever CONDITION_COLOURS already picked".
+
+        Which palette colour: driven by the sparkle noise field itself
+        (already computed per caller, normalised against its own peak
+        this tick), so different sparkle "hot spots" land on different
+        points along the palette gradient instead of every sparkle
+        pulling toward one fixed accent - gives the shimmer genuine
+        colour variety, not a single flat tint. Blend fraction clamped to
+        [0, 1] (fully at the sampled palette colour at most, never
+        overshooting past it) separately from the brightness multiplier,
+        which is free to exceed 1 as before - glimmer only ever adds on
+        top of the ambient base, never darkens it."""
         strength = (sparkle * max_boost)[:, None]
-        luma = frame.mean(axis=1, keepdims=True)
-        vivid = luma + (frame - luma) * (1.0 + strength * self.SATURATION_BOOST_RATIO)
+        norm = sparkle / max(float(sparkle.max()), 1e-6)  # 0..1 relative to this tick's own peak sparkle
+        accent = self.lut[(norm * (len(self.lut) - 1)).astype(int)].astype(float)
+        vivid = frame + (accent - frame) * np.clip(strength, 0.0, 1.0)
         return vivid * (1.0 + strength)
 
     def _shimmer_boost(self, frame: np.ndarray, contrast: float) -> np.ndarray:

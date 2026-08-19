@@ -4,7 +4,7 @@ calibrate_sensor.py
 Poll ONE sensor in isolation (same isolation trick as test_sensor.py) for a
 stretch of time, tracking min/max/mean per numeric reading - so you have
 real numbers to plug into config.yaml's zone `source` {min, max} rescale
-ranges instead of guessing (e.g. the temp_humidity zone's temperature/
+ranges instead of guessing (e.g. the weather zone's temperature/
 humidity bounds, or the heart_rate zone's bpm range).
 
 Usage:

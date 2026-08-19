@@ -295,7 +295,7 @@ def _resolve_one_source(latest: dict, spec):
     that path completely unchanged (missing path -> None instead of 0.0,
     since None unambiguously means "nothing there yet" for a shape no
     numeric fallback could stand in for) - for a source that isn't a single
-    0..1 reading at all, e.g. temp_humidity's `history` (a whole list of
+    0..1 reading at all, e.g. weather's `history` (a whole list of
     past readings for TempHumidityBarEffect's replay, not one value to
     rescale). Every other zone's sources stay plain floats; this is an
     escape hatch for the one effect that needs structured data, not a
