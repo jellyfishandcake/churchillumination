@@ -33,6 +33,8 @@ const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 
 const bg = new Image();
+bg.onerror = () => console.error("[shadow] backdrop image failed to load:", bg.src);
+bg.onload = () => console.log("[shadow] backdrop image loaded:", bg.src, `${bg.naturalWidth}x${bg.naturalHeight}`);
 const imageUrlOverride = new URLSearchParams(location.search).get("image");
 if (imageUrlOverride) bg.src = imageUrlOverride;
 
