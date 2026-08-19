@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 config.yaml
 web/qr.png
+web/qr_backdrop.png
 web/uploads/
 src/sensing/models/*.tflite
 

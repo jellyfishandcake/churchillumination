@@ -16,10 +16,10 @@
     h1 { grid-column: 1 / -1; }
     #zones-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; }
     #side-panel { display: flex; flex-direction: column; gap: 1.5rem; }
-    #qr-block { display: flex; align-items: center; gap: 1rem; }
-    #qr-block img { width: 76px; height: 76px; border-radius: 4px; background: #fff; padding: 4px; border: 1px solid var(--hairline); flex-shrink: 0; }
-    #qr-block p { margin: 0; color: var(--muted); font-size: 0.82rem; }
-    #qr-block a { color: var(--accent); }
+    .qr-block { display: flex; align-items: center; gap: 1rem; }
+    .qr-block img { width: 76px; height: 76px; border-radius: 4px; background: #fff; padding: 4px; border: 1px solid var(--hairline); flex-shrink: 0; }
+    .qr-block p { margin: 0; color: var(--muted); font-size: 0.82rem; }
+    .qr-block a { color: var(--accent); }
     #links-list a { display: block; padding: 0.6rem 0; border-bottom: 1px solid var(--hairline); color: var(--ink); text-decoration: none; font-size: 0.88rem; }
     #links-list a:last-child { border-bottom: none; }
     #links-list a:hover { color: var(--accent); }
@@ -36,9 +36,14 @@
   <div id="zones-grid"></div>
 
   <div id="side-panel">
-    <div class="panel" id="qr-block">
+    <div class="panel qr-block">
       <img src="/qr.png" alt="Scan to build a palette from your phone">
       <p>Scan to build a colour palette from your own photo, or open <a href="/contribute.html">contribute.html</a> directly.</p>
+    </div>
+
+    <div class="panel qr-block">
+      <img src="/qr_backdrop.png" alt="Scan to set the shadow display's backdrop photo">
+      <p>Scan to set the shadow display's backdrop photo, or open <a href="/backdrop.html">backdrop.html</a> directly.</p>
     </div>
 
     <div class="panel">
@@ -46,7 +51,6 @@
       <div id="links-list">
         <a href="/admin.html">Admin<small>Live effect/palette controls, sensor toggles</small></a>
         <a href="/contribute.html">Contribute a palette<small>Build a colour palette from a photo</small></a>
-        <a href="/cast.html">Cast<small>Full-screen sketch display for a projector</small></a>
         <a href="/shadow.html">Shadow display<small>Thermal-camera shadow-cast projector view</small></a>
         <a href="/backdrop.html">Set shadow backdrop<small>Upload the photo behind the shadow display</small></a>
       </div>

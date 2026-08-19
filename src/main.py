@@ -70,7 +70,7 @@ def build_sensors(config: dict) -> dict:
     if sensors_config["motion"]["enabled"]:
         motion_config = sensors_config["motion"]
         sensors["motion"] = MotionSensor(
-            sensitivity=motion_config["sensitivity"],
+            motion_range=(motion_config["motion_range_low"], motion_config["motion_range_high"]),
             human_temp_range=(motion_config["human_temp_range_low"], motion_config["human_temp_range_high"]),
         )
     if sensors_config["multisensor"]["enabled"]:
@@ -782,17 +782,23 @@ async def main():
     server.runtime_settings["activation_timeout_seconds"] = config["activation"]["timeout_seconds"]
     server.runtime_settings["smoothing_alpha"] = SMOOTHING_ALPHA
 
-    # QR code linking straight to contribute.html, so people can scan it on
-    # the monitor instead of typing a URL. Best-effort: a machine with no
-    # network route at all (no interface up) can't be reached by anyone
-    # else anyway, so skipping the image there is fine, not fatal.
+    # QR codes linking straight to contribute.html/backdrop.html, so people
+    # can scan them on the monitor instead of typing a URL. Best-effort: a
+    # machine with no network route at all (no interface up) can't be
+    # reached by anyone else anyway, so skipping the images there is fine,
+    # not fatal.
     try:
         lan_ip = network.get_lan_ip()
+
         contribute_url = f"http://{lan_ip}:{config['server']['port']}/contribute.html"
         qrcode.make(contribute_url).save("web/qr.png")
         print(f"Contribute-a-palette QR code points to {contribute_url}")
+
+        backdrop_url = f"http://{lan_ip}:{config['server']['port']}/backdrop.html"
+        qrcode.make(backdrop_url).save("web/qr_backdrop.png")
+        print(f"Shadow-backdrop QR code points to {backdrop_url}")
     except OSError as exc:
-        print(f"[main] couldn't generate QR code (no network route?): {exc}")
+        print(f"[main] couldn't generate QR codes (no network route?): {exc}")
 
     tasks = [
         sensor_loop(sensors, infer, activation_tracker, hr_tracker, motion_tracker, audio_moment_tracker),

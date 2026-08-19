@@ -41,7 +41,7 @@ FRAME_RATE_HZ = 8     # passed to MLX90640.setup() - see the library's README fo
 
 
 class MotionSensor(Sensor):
-    """sensitivity is a placeholder — thermal frame-diff magnitudes (°C)
+    """motion_range is a placeholder — thermal frame-diff magnitudes (°C)
     are a very different scale to the old 0-255 grayscale diff, and need
     calibrating against the real sensor once it's in hand, not guessed.
     webcam_sensitivity only matters on the dev-machine webcam fallback.
@@ -88,10 +88,10 @@ class MotionSensor(Sensor):
     # just standing there. Thermal frames don't use this at all - see above.
     BASELINE_ALPHA = 0.005
 
-    def __init__(self, sensitivity: float = 0.2, webcam_sensitivity: float = 8.0,
+    def __init__(self, motion_range: tuple = (0.45, 1.0), webcam_sensitivity: float = 8.0,
                  human_temp_range: tuple = (24.0, 31.0), webcam_blob_threshold: tuple = (15.0, 60.0)):
         super().__init__()
-        self.sensitivity = sensitivity
+        self.motion_range = motion_range  # (low, high) °C frame-diff mean, absolute - motion ramps 0..1 across this band, same shape as human_temp_range below
         self.webcam_sensitivity = webcam_sensitivity
         self.human_temp_range = human_temp_range  # (low, high) °C, absolute - mask ramps 0..1 across this range
         self.webcam_blob_threshold = webcam_blob_threshold  # (low, high) °C-above-baseline-equivalent, 0-255 grayscale units - dev fallback only, see docstring
@@ -210,30 +210,45 @@ class MotionSensor(Sensor):
         diff = np.abs(frame - self._prev)  # per-pixel change between frames
         self._prev = frame
         if is_thermal:
-            motion = min(1.0, diff.mean() * self.sensitivity)  # diff is in °C
+            low, high = self.motion_range
+            motion = np.clip((diff.mean() - low) / (high - low), 0.0, 1.0)  # diff is in °C
         else:
             motion = min(1.0, (diff.mean() / 255.0) * self.webcam_sensitivity)  # diff is 0-255 grayscale
 
         self._mark_ok()
         # motion_raw_diff: the unscaled diff.mean() in native units (°C for
-        # thermal, 0-255 grayscale for webcam), before sensitivity/clamping -
-        # not consumed by any zone (config.yaml only ever references
+        # thermal, 0-255 grayscale for webcam), before motion_range/clamping
+        # - not consumed by any zone (config.yaml only ever references
         # `motion`), purely so tools/calibrate_sensor.py's min/max/mean
-        # readout is actually useful here. `sensitivity` was 10.0 (an
-        # untuned placeholder, same caveat as webcam_sensitivity) until real
-        # calibrate_sensor.py data came in 2026-08-18: motion_raw_diff
-        # ranged 0.36-1.56 over 25 samples, so even the *lowest* reading
-        # (0.36, presumably close to idle noise, though this run wasn't a
-        # clean isolated calm-room baseline) already computed
-        # 0.36*10=3.6 - clipped straight to 1.0, well within ordinary sensor
-        # read noise, matching motion sitting at mean=0.96 (essentially
-        # always saturated) in that same data. Lowered to 0.2
-        # (0.36*0.2≈0.07, comfortably low) - if `motion` is still pinned
-        # near 1.0 with nobody around, watch motion_raw_diff for a stretch
-        # with the room *deliberately* empty (calibrate_sensor.py motion)
-        # and raise sensitivity's denominator (i.e. lower the constant
-        # further) until idle noise reads near 0 and only real movement
-        # pushes it toward 1 - configurable via config.yaml's
-        # sensors.motion.sensitivity (see main.py's build_sensors) so this
-        # doesn't need a code redeploy to retune again.
+        # readout is actually useful here.
+        #
+        # This used to be a single multiplicative `sensitivity` (motion =
+        # min(1, diff.mean() * sensitivity)) rather than a (low, high)
+        # range like human_temp_range above - dropped 2026-08-19 once real
+        # data showed why that shape can't work here: a plain multiply
+        # can't ever separate a nonzero idle floor from the ceiling, since
+        # scaling preserves their ratio no matter what the constant is.
+        # First real calibration (2026-08-18, sensitivity=10.0, an untuned
+        # placeholder) had motion_raw_diff ranging 0.36-1.56 over 25
+        # samples - even the lowest reading (0.36, presumably close to
+        # idle) already computed 0.36*10=3.6, clipped straight to 1.0.
+        # Lowering sensitivity to 0.2 fixed the saturation-at-1.0 symptom
+        # but exposed the actual shape problem: real on-site testing
+        # (2026-08-19) showed `motion` compressed into 0.09 (standing
+        # still) .. 0.2 (moving as much as possible) - back out the raw
+        # diff.mean() behind those two numbers (divide by the old 0.2
+        # sensitivity) and idle noise itself was already ~0.45°C, only
+        # ~2.2x below the ~1.0°C ceiling seen at maximum motion. No
+        # sensitivity constant multiplied against a fixed-ratio floor and
+        # ceiling can ever spread that out toward a full 0..1 - it needs an
+        # actual floor subtracted, not just scaling. motion_range=(0.45,
+        # 1.0) below is that floor/ceiling pair, back-calculated from those
+        # two on-site numbers rather than a fresh calibration run - if
+        # `motion` still doesn't span close to the full 0..1 range, get a
+        # real motion_raw_diff reading via `python -m tools.calibrate_sensor
+        # motion --live` (room empty vs. moving as much as possible) and
+        # set motion_range directly from that instead of this back-solved
+        # estimate. Configurable via config.yaml's
+        # sensors.motion.motion_range_low/high (see main.py's
+        # build_sensors) so this doesn't need a code redeploy to retune.
         return {"motion": motion, "motion_raw_diff": float(diff.mean()), **blob_reading}

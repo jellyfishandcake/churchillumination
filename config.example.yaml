@@ -192,20 +192,22 @@ sensors:
     enabled: true
 
   # Central MLX90640 thermal camera (frame-diff based motion). Falls back
-  # to a mock if the sensor/its library isn't present. sensitivity scales
-  # frame-to-frame diff into `motion` - was 10.0, lowered to 0.2
-  # (2026-08-18) once real calibrate_sensor.py data showed idle noise
-  # alone was already saturating it. human_temp_range_low/high (°C,
-  # absolute) is the band web/shadow.html's shadow-cast blob mask ramps
-  # 0..1 across - high end lowered 34.0->31.0 the same day, since
-  # thermal_frame_max topped out at 31.95°C in that data (34.0 may never
-  # have been reachable at all). Both from real on-site data at this
-  # point, not by-feel guesses - see motion.py's own comments for the
-  # numbers behind them. Retune further with
-  # `python -m tools.calibrate_sensor motion --live` if needed.
+  # to a mock if the sensor/its library isn't present. motion_range_low/high
+  # (°C, absolute frame-diff mean) is the band `motion` ramps 0..1 across -
+  # replaced a single multiplicative `sensitivity` 2026-08-19 once on-site
+  # data showed why that shape can't work (a nonzero idle floor can't be
+  # separated from the ceiling by scaling alone - see motion.py's own
+  # comments for the numbers). human_temp_range_low/high (°C, absolute) is
+  # the separate band web/shadow.html's shadow-cast blob mask ramps 0..1
+  # across - high end lowered 34.0->31.0 2026-08-18, since thermal_frame_max
+  # topped out at 31.95°C in that data (34.0 may never have been reachable
+  # at all). All from real on-site data at this point, not by-feel guesses
+  # - see motion.py's own comments for the numbers behind them. Retune
+  # further with `python -m tools.calibrate_sensor motion --live` if needed.
   motion:
     enabled: true
-    sensitivity: 0.2
+    motion_range_low: 0.45
+    motion_range_high: 1.0
     human_temp_range_low: 24.0
     human_temp_range_high: 31.0
 

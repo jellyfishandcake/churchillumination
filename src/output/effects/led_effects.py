@@ -446,15 +446,18 @@ class TriArmGlideEffect:
     (the zone's source config supplies {min: 0, max: 360} - see config.py)
     and is converted back to radians here. `intensity` is the shake's
     magnitude, same signal DirectionalWaveEffect used. See
-    accel_stick.ino's readAcceleration() for what angle_deg actually is:
-    atan2(ay, ax) of the board's own local X/Y axes ONLY - Z (roughly
-    gravity-aligned when the stick is held upright) is deliberately
-    excluded, on the assumption the stick is held pointing up/down and
-    swung side-to-side/forward-back, not held flat. A horizontal swing
-    while the board itself isn't held upright doesn't show up correctly in
-    X/Y - if a swing's landing on the wrong arm consistently (not just
-    noisy/random), that's the first thing to check, not this effect's own
-    angle-to-arm mapping.
+    accel_stick.ino's readAcceleration() for what angle_deg actually is -
+    as of firmware version 2026-08-19, a gyro+accel-fused (Madgwick)
+    WORLD-frame swing direction, not a raw per-tick atan2 of the board's
+    own body-frame axes (that raw version made the stick's current grip
+    rotation matter as much as the actual swing direction - see
+    accel_stick.ino's own version comment for the full story and its
+    caveats, e.g. "0 degrees" isn't an absolute compass heading, just
+    wherever the stick pointed at power-on). Wire contract to this Python
+    side is unchanged either way: still one angle in [0, 360) over the
+    horizontal plane - if a swing's landing on the wrong arm consistently
+    (not just noisy/random), recalibrate ARM_ANGLES_DEG below, not this
+    effect's angle-to-arm mapping.
 
     REDESIGNED 2026-08-17 from a continuous per-tick reactive glide into a
     swing-detect-then-fire-a-beam model with hysteresis + a buffered,
