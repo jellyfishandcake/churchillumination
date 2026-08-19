@@ -17,6 +17,7 @@ import logging
 import pathlib
 import re
 from http import HTTPStatus
+from urllib.parse import urlsplit
 import websockets
 from websockets.http11 import Response
 from websockets.datastructures import Headers
@@ -455,10 +456,24 @@ async def serve_static(connection, request):
     if request.headers.get("Upgrade", "").lower() == "websocket":
         return None
  
-    path = request.path
+    # request.path is the raw HTTP request-target, verbatim - it includes
+    # any query string (e.g. "/uploads/shadow_backdrop.jpg?v=5"), the
+    # websockets library does no path/query splitting of its own. Every
+    # OTHER static asset here is requested without a query string, so this
+    # went unnoticed until shadow.js's cache-busting ?v= (deliberately
+    # added so the browser re-fetches a changed backdrop) started sending
+    # one: unstripped, "shadow_backdrop.jpg?v=5" never matched the real
+    # on-disk "shadow_backdrop.jpg", is_file() below was always False, and
+    # the request fell through to `return None` (silently treated as a
+    # possible WS-upgrade attempt instead of served) - the backdrop image
+    # request itself failing outright, not a bad path/permissions/upload
+    # problem on the writing side (confirmed 2026-08-19: the upload+version
+    # bump+broadcast chain was all working the whole time, only the GET for
+    # the actual image bytes was ever failing).
+    path = urlsplit(request.path).path
     if path == "/":
         path = "/index.html"
- 
+
     file_path = WEB_DIR / path.lstrip("/")
  
     # Security: reject any path that escapes WEB_DIR
