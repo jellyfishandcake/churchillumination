@@ -465,13 +465,24 @@ class ShakeFireworkEffect:
     just read as all arms solidly lit rather than distinct bursts), short
     enough that genuinely separate vigorous shakes each register.
 
-    BEAM RENDERING: unchanged in spirit from TriArmGlideEffect - each arm
-    gets its own travelling beam, hub -> tip, speed/width/brightness all
-    scaling with `intensity`. Only difference: every arm is driven by the
-    SAME intensity now (no per-arm alignment weight, since there's no
-    direction to be aligned/misaligned with any more) - the whole point is
-    that a vigorous shake looks the same regardless of how you happen to
-    be holding or moving the stick.
+    GLOW RENDERING: no longer a travelling beam (dropped 2026-08-19, was a
+    hub->tip swipe carried over from TriArmGlideEffect) - a full arm lights
+    up all at once the instant a shake fires, then fades as one piece. Two
+    real-hardware reasons pushed this, both pointing the same direction:
+    (1) explicit feedback to focus on "having the light on" over "the
+    motion itself" - a swipe reads as a gimmick, a bloom reads as
+    presence; (2) accelerometer_strip's SPI1 glitching under timing
+    pressure (see main.py's output_loop docstring) means fast per-pixel
+    motion is exactly the content most likely to visibly show a dropped
+    frame - a whole arm changing together has nothing for a single bad
+    frame to desync from. Brightness scales with `intensity`, same as
+    before; every arm still gets the SAME intensity (no per-arm alignment
+    weight, no direction to be aligned/misaligned with) - a vigorous shake
+    looks the same regardless of how you happen to be holding the stick.
+    ARM_REVERSED no longer affects rendering at all (there's no direction
+    of travel left to get backwards) - kept only because arm_ranges still
+    needs each segment's (start, length) in the shared trail array, which
+    doesn't depend on which end is "hub" and which is "tip".
 
     ARM_LENGTHS: 5 segments, chain order (segment 0 is whichever pixel the
     data line reaches first out of accelerometer_strip). Physically still
@@ -504,20 +515,19 @@ class ShakeFireworkEffect:
     # 0.25 - reverted 2026-08-19 per explicit "quick, so the next one can
     # come" feedback: this is the only thing standing between one firework
     # and the next, so it should favour rapid repeats, not add ceremony).
-    SHAKE_TRIGGER_THRESHOLD = 0.5   # intensity crossing this fires every arm immediately
-    SHAKE_COOLDOWN_SECONDS = 0.12   # minimum gap between two triggers
+    SHAKE_TRIGGER_THRESHOLD = 0.1   # intensity crossing this fires every arm immediately
+    SHAKE_COOLDOWN_SECONDS = 0.1   # minimum gap between two triggers
 
-    # Beam rendering - carried over from TriArmGlideEffect's own already-
-    # tuned-by-feedback numbers, then pushed further 2026-08-19 (7.0/0.7 ->
-    # 9.0/0.6) per the same "quick" feedback as the cooldown above - a
-    # firework burst should read as a sudden pop, not a lingering glide,
-    # and resolving faster is also what actually lets the next trigger's
-    # burst read as distinct rather than overlapping the previous one's
-    # fading tail. Still untuned-placeholder, verify on real hardware.
-    BEAM_SPEED_SCALE = 9.0         # pixels/tick at intensity = 1.0
-    BEAM_WIDTH_MIN_PX = 2          # pixels lit around the beam's leading edge at intensity -> 0
-    BEAM_WIDTH_MAX_PX = 8          # ... at intensity -> 1
-    BEAM_DECAY = 0.6               # per-tick trail fade behind a travelling beam
+    # Glow rendering - was a travelling-beam speed/width pair (7.0/0.7 ->
+    # 9.0/0.6 -> 5.0/0.7 -> 2.0/0.85, chasing "too fast" feedback each
+    # time); dropped the travel entirely 2026-08-19 in favour of the whole
+    # arm lighting at once (see class docstring's GLOW RENDERING section
+    # for why - both the "focus on the light being on" feedback and the
+    # SPI1 glitch-visibility problem point the same direction). Only a
+    # decay rate left to tune now - how many (real) seconds the glow takes
+    # to fade back to background after a fire. Still an untuned-
+    # placeholder feel value, verify on real hardware.
+    GLOW_DECAY = 0.85   # per-tick fade multiplier (see _decay_scale) - closer to 1.0 = slower fade
 
     def __init__(self, n_pixels, palette, background_level=0.05):
         self.lut = _palette_lut(palette)
@@ -530,52 +540,30 @@ class ShakeFireworkEffect:
         self.arm_ranges = list(zip(starts, lengths))  # (start, length) per segment, in the shared trail array
 
         self._cooldown_remaining = 0.0
-        self._beams = {}  # arm_index -> {"pos", "speed", "width", "brightness"} for each currently-travelling beam
-
-    def _to_index(self, arm_idx: int, dist: int) -> int:
-        """Hub-relative distance along one arm segment -> real index in the shared trail array."""
-        start, length = self.arm_ranges[arm_idx]
-        return start + (length - 1 - dist) if self.ARM_REVERSED[arm_idx] else start + dist
 
     def _fire(self, intensity: float):
-        """Spawn a beam on every arm segment at once - see class
-        docstring's INSTANT TRIGGER / BEAM RENDERING sections."""
-        for k in range(self.ARM_COUNT):
-            _, length = self.arm_ranges[k]
+        """Light every arm to its full length at once - see class
+        docstring's INSTANT TRIGGER / GLOW RENDERING sections. np.maximum
+        (not a plain overwrite) so re-firing mid-fade never dims an arm
+        that was already brighter than this new trigger's intensity."""
+        brightness = scaled(intensity, 0.3, 1.0)
+        for start, length in self.arm_ranges:
             if length == 0:
                 continue
-            self._beams[k] = {
-                "pos": 0.0,
-                "speed": intensity,
-                "width": self.BEAM_WIDTH_MIN_PX + (self.BEAM_WIDTH_MAX_PX - self.BEAM_WIDTH_MIN_PX) * intensity,
-                "brightness": scaled(intensity, 0.3, 1.0),
-            }
+            self.trail[start:start + length] = np.maximum(self.trail[start:start + length], brightness)
 
     def step(self, intensity: float = 0.0, dt: float = ASSUMED_TICK_SECONDS):
         intensity = min(max(intensity, 0.0), 1.0)
 
         # Cooldown is a real countdown in seconds - dt substitutes directly
         # for the old fixed-TICK_SECONDS assumption, no ratio/exponent
-        # needed (unlike BEAM_SPEED_SCALE/BEAM_DECAY below, which were
-        # tuned as per-assumed-tick rates).
+        # needed (unlike GLOW_DECAY below, tuned as a per-assumed-tick rate).
         self._cooldown_remaining = max(0.0, self._cooldown_remaining - dt)
         if intensity >= self.SHAKE_TRIGGER_THRESHOLD and self._cooldown_remaining <= 0.0:
             self._fire(intensity)
             self._cooldown_remaining = self.SHAKE_COOLDOWN_SECONDS
 
-        self.trail *= _decay_scale(self.BEAM_DECAY, dt)
-        for k in list(self._beams.keys()):
-            _, length = self.arm_ranges[k]
-            beam = self._beams[k]
-            beam["pos"] += beam["speed"] * self.BEAM_SPEED_SCALE * _rate_scale(dt)
-            if beam["pos"] >= length - 1:
-                del self._beams[k]  # reached the tip - done
-                continue
-            lo = max(0, int(beam["pos"] - beam["width"] / 2))
-            hi = min(length - 1, int(beam["pos"] + beam["width"] / 2))
-            for dist in range(lo, hi + 1):
-                idx = self._to_index(k, dist)
-                self.trail[idx] = max(self.trail[idx], beam["brightness"])
+        self.trail *= _decay_scale(self.GLOW_DECAY, dt)
 
         frame = np.tile(self.background, (len(self.trail), 1))
         for k in range(self.ARM_COUNT):
