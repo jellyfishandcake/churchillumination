@@ -498,6 +498,8 @@ class ShakeFireworkEffect:
     # caveat as accel_stick.ino's SENSITIVITY). SHAKE_TRIGGER_THRESHOLD is
     # deliberately higher than TriArmGlideEffect's old SWING_TRIGGER_THRESHOLD
     # (0.15) - see class docstring's INSTANT TRIGGER section for why.
+    # step() checks intensity >= this (not >), so a reading that reaches
+    # 0.5 exactly still fires rather than needing to clear it - 2026-08-19.
     # SHAKE_COOLDOWN_SECONDS back down near that old value (was briefly
     # 0.25 - reverted 2026-08-19 per explicit "quick, so the next one can
     # come" feedback: this is the only thing standing between one firework
@@ -557,7 +559,7 @@ class ShakeFireworkEffect:
         # needed (unlike BEAM_SPEED_SCALE/BEAM_DECAY below, which were
         # tuned as per-assumed-tick rates).
         self._cooldown_remaining = max(0.0, self._cooldown_remaining - dt)
-        if intensity > self.SHAKE_TRIGGER_THRESHOLD and self._cooldown_remaining <= 0.0:
+        if intensity >= self.SHAKE_TRIGGER_THRESHOLD and self._cooldown_remaining <= 0.0:
             self._fire(intensity)
             self._cooldown_remaining = self.SHAKE_COOLDOWN_SECONDS
 

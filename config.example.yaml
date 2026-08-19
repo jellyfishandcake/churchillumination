@@ -146,7 +146,7 @@ leds:
       effect: shake_firework   # vigorous shake fires every arm at once from the hub, no direction involved - see ShakeFireworkEffect's docstring (replaced tri_arm_glide 2026-08-19)
       palette: autumn
       source:
-        intensity: sensors.acceleration                              # raw shake magnitude, 0..1
+        intensity: interactions.acceleration_raw                     # NOT sensors.acceleration (smoothed) - ShakeFireworkEffect is an instant trigger and needs the real, unsmoothed spike - see main.py's sensor_loop comment on acceleration_raw
       # On its own independent chain (accelerometer_strip, SPI1) - NOT
       # data-connected to heart_rate. 94 = 19+17+20+16+22: physically the
       # same 4 arms confirmed 2026-08-10 post-soldering (36/20/16/22,

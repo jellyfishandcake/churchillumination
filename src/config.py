@@ -151,7 +151,13 @@ DEFAULTS = {
                 # the two zones ended up wired as two separate chains rather
                 # than one spliced-together strip.
                 "source": {
-                    "intensity": "sensors.acceleration",
+                    # NOT sensors.acceleration (smoothed) - ShakeFireworkEffect
+                    # is an instant trigger (see its own docstring) and needs
+                    # the real, unsmoothed spike - see main.py's sensor_loop
+                    # comment on acceleration_raw for why sensors.acceleration
+                    # doesn't work for this (SMOOTHING_ALPHA blunts a quick
+                    # shake's peak below SHAKE_TRIGGER_THRESHOLD).
+                    "intensity": "interactions.acceleration_raw",
                 },
                 # 94 = 19+17+20+16+22, confirmed 2026-08-10 post-soldering
                 # (arm lengths) + 2026-08-19 (arm 1 split into 2 wiring

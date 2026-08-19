@@ -269,7 +269,23 @@ async def sensor_loop(sensors, infer, activation_tracker, hr_tracker, motion_tra
         # bpm smoothed for a steadier bulb pulse rate; pulse_detected itself
         # stays raw going into hr_tracker above, same as PIR presence does.
         server.latest["heart_rate"] = {"bpm": smoothed.get("heart_rate"), "engaged": hr_engaged}
-        server.latest["interactions"] = {"motion_burst": motion_burst, "audio_ripple": audio_ripple}
+        # acceleration_raw added 2026-08-19: the accelerometer zone's
+        # ShakeFireworkEffect is deliberately an INSTANT trigger (see its
+        # own docstring - no buffering/averaging, fires the tick intensity
+        # crosses threshold) but was reading sensors.acceleration
+        # (smoothed) instead of this raw signal - modelling SMOOTHING_ALPHA
+        # (0.15) against a real shake, it takes ~5 consecutive ticks
+        # (~250ms) of a sustained max reading before the smoothed value
+        # even crosses 0.5, which a real quick shake often doesn't sustain
+        # for at all, even though the raw reading genuinely spikes to 1.0
+        # - the effect's own "instant, no averaging" design was being
+        # silently defeated by smoothing one layer up that it never asked
+        # for. Same "raw, not smoothed, so it reacts instantly" reasoning
+        # as motion_burst/audio_ripple below, not a new pattern.
+        server.latest["interactions"] = {
+            "motion_burst": motion_burst, "audio_ripple": audio_ripple,
+            "acceleration_raw": raw.get("acceleration", 0.0),
+        }
         # Every sensor's smoothed reading, flat (see e.g. pir.py's docstring
         # on why sensors share one flat namespace, distinct keys). Lets a
         # zone's `source` reference any raw reading (e.g.
