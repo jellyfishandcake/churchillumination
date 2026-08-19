@@ -265,6 +265,23 @@ void quatMultiply(float a0, float a1, float a2, float a3, float b0, float b1, fl
 // likely to be swing-induced magnetic noise than genuine yaw drift.
 static constexpr float MAG_YAW_GAIN = 0.3f;
 
+// DISABLED 2026-08-19 after real-hardware testing: instead of a stable
+// reference, "cannot seem to find a set coordinate system" - angle_deg
+// kept moving even without the stick's real orientation changing. Leading
+// suspect: BMM150 sits behind BMI270, on a separate die/PCB placement, not
+// necessarily axis-aligned with it the way this code assumed (rotateByQuat
+// applies the same body frame to both mx/my/mz and ax/ay/az/gx/gy/gz with
+// no remapping) - if the mag axes are actually rotated/mirrored relative
+// to the IMU's, magYawCorrect's "error" term is comparing two headings
+// that were never in the same frame to begin with, and every tick nudges
+// the real (previously working) 6DOF orientation toward that bogus error
+// instead of correcting real drift. Flip this back to true only after
+// independently confirming BMM150's axis mapping against BMI270's (e.g.
+// log raw mx/my/mz while rotating the stick through known 90-degree turns
+// about each axis and check which axis actually responds) - not safe to
+// guess at with no hardware in hand to verify against.
+static constexpr bool MAG_YAW_CORRECTION_ENABLED = false;
+
 // Running hard-iron calibration (min/max per axis -> offset = midpoint).
 // No soft-iron/scale correction - offset-only is a rough-but-usable
 // compass for "which of a few directions," not lab-grade heading accuracy.
@@ -403,7 +420,7 @@ AccelReading readAcceleration(unsigned long now) {
   last_filter_update_ms = now;
   if (dt > 0.0f) {
     madgwickUpdateIMU(gx * DEG_TO_RAD_F, gy * DEG_TO_RAD_F, gz * DEG_TO_RAD_F, ax, ay, az, dt);
-    magYawCorrect(dt);  // no-op if this board has no magnetometer - see its own comment
+    if (MAG_YAW_CORRECTION_ENABLED) magYawCorrect(dt);  // see MAG_YAW_CORRECTION_ENABLED's own comment for why this is off
   }
 
   float magnitude = sqrtf(ax * ax + ay * ay + az * az);

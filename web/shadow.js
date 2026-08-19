@@ -32,9 +32,26 @@ const FLIP_Y = true;
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 
+// TEMPORARY 2026-08-19 debug state (see drawDebugOverlay below) - remove
+// once the "backdrop always shows the cream fallback" bug is found.
+// console.error/console.log alone weren't answerable: this page gets
+// tested by scanning a QR code on a phone (see backdrop.html/qr_backdrop.png),
+// where opening devtools isn't realistically available the way it is on a
+// laptop, so the same information needs to also be readable directly off
+// the screen, not just the console.
+let debugWsMessageCount = 0;
+let debugLastBackdropVersion = null;
+let debugLoadResult = "(no image load attempted yet)";
+
 const bg = new Image();
-bg.onerror = () => console.error("[shadow] backdrop image failed to load:", bg.src);
-bg.onload = () => console.log("[shadow] backdrop image loaded:", bg.src, `${bg.naturalWidth}x${bg.naturalHeight}`);
+bg.onerror = () => {
+  debugLoadResult = `FAILED to load: ${bg.src}`;
+  console.error("[shadow] backdrop image failed to load:", bg.src);
+};
+bg.onload = () => {
+  debugLoadResult = `loaded OK: ${bg.src} (${bg.naturalWidth}x${bg.naturalHeight})`;
+  console.log("[shadow] backdrop image loaded:", bg.src, `${bg.naturalWidth}x${bg.naturalHeight}`);
+};
 const imageUrlOverride = new URLSearchParams(location.search).get("image");
 if (imageUrlOverride) bg.src = imageUrlOverride;
 
@@ -48,6 +65,27 @@ function maybeLoadBackdrop(version) {
   if (imageUrlOverride || version === loadedBackdropVersion || version === 0) return;
   loadedBackdropVersion = version;
   bg.src = `/uploads/shadow_backdrop.jpg?v=${version}`; // cache-bust: same path, new query string forces a re-fetch
+}
+
+// TEMPORARY - see the debug state comment above. Only draws while the
+// cream fallback is showing (i.e. exactly the broken state), so it's
+// invisible/no-op once a backdrop is actually displaying correctly.
+function drawDebugOverlay() {
+  const lines = [
+    `ws messages received: ${debugWsMessageCount}`,
+    `last shadow_backdrop.version seen: ${debugLastBackdropVersion}`,
+    `?image= override: ${imageUrlOverride || "(none)"}`,
+    `image load: ${debugLoadResult}`,
+  ];
+  ctx.font = "14px monospace";
+  ctx.textBaseline = "top";
+  lines.forEach((line, i) => {
+    const y = 10 + i * 18;
+    ctx.fillStyle = "rgba(255,255,255,0.85)";
+    ctx.fillRect(8, y - 2, ctx.measureText(line).width + 8, 18);
+    ctx.fillStyle = "#111";
+    ctx.fillText(line, 12, y);
+  });
 }
 
 // The mask arrives at sensor resolution (e.g. 32x24) - painted onto this
@@ -81,6 +119,7 @@ function drawBackground() {
     // than a mismatched grey.
     ctx.fillStyle = "#f7f3ec";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+    drawDebugOverlay();  // TEMPORARY - see its own comment
     return;
   }
   // "cover" fit - fill the canvas, cropping whichever axis overflows, same
@@ -129,6 +168,8 @@ function render() {
 requestAnimationFrame(render);
 
 window.connectWS((data) => {
+  debugWsMessageCount++;  // TEMPORARY - see drawDebugOverlay's comment. A count stuck at 0 means the websocket itself never connected/received anything.
+
   const mask = data.sensors?.thermal_mask;
   const width = data.sensors?.thermal_width;
   const height = data.sensors?.thermal_height;
@@ -136,5 +177,8 @@ window.connectWS((data) => {
     latestMask = { width, height, values: mask };
   }
 
-  if (data.shadow_backdrop) maybeLoadBackdrop(data.shadow_backdrop.version);
+  if (data.shadow_backdrop) {
+    debugLastBackdropVersion = data.shadow_backdrop.version;  // TEMPORARY
+    maybeLoadBackdrop(data.shadow_backdrop.version);
+  }
 }, null); // no status element on this page - it's meant to be projected clean

@@ -88,6 +88,23 @@ class MotionSensor(Sensor):
     # just standing there. Thermal frames don't use this at all - see above.
     BASELINE_ALPHA = 0.005
 
+    # Per-tick EMA rate for the PUBLISHED mask itself (thermal_mask, used by
+    # web/shadow.html's shadow-cast blob) - unrelated to BASELINE_ALPHA
+    # above, which only smooths the webcam fallback's own background model,
+    # not what gets sent to the browser. Added 2026-08-19: the mask was
+    # published as a raw instantaneous per-pixel value every tick with zero
+    # smoothing anywhere in the pipeline - main.py's _smooth_readings only
+    # EMAs plain numeric fields and explicitly passes arrays through
+    # untouched (see its own docstring), so ordinary sensor noise (real
+    # even pointed at a static scene, see read()'s own NaN/all-identical
+    # check above) showed up directly as flicker in the shadow on screen,
+    # tick to tick. This EMA denoises that in the same spirit as
+    # BASELINE_ALPHA, just much faster (this is smoothing sensor noise on
+    # an already-live signal, not slowly forgetting a background over
+    # minutes) - untuned placeholder, raise toward 1.0 for a snappier/
+    # noisier shadow, lower for a smoother/laggier one.
+    MASK_SMOOTHING_ALPHA = 0.4
+
     def __init__(self, motion_range: tuple = (0.45, 1.0), webcam_sensitivity: float = 8.0,
                  human_temp_range: tuple = (24.0, 31.0), webcam_blob_threshold: tuple = (15.0, 60.0)):
         super().__init__()
@@ -97,6 +114,7 @@ class MotionSensor(Sensor):
         self.webcam_blob_threshold = webcam_blob_threshold  # (low, high) °C-above-baseline-equivalent, 0-255 grayscale units - dev fallback only, see docstring
         self._prev = None
         self._baseline = None  # slow per-pixel background model, webcam fallback only - see docstring
+        self._mask_ema = None  # temporal denoising of the published mask - see MASK_SMOOTHING_ALPHA
         self._active = False  # MLX90640 present
         self._cv_cam = None   # dev-machine webcam fallback
 
@@ -149,6 +167,74 @@ class MotionSensor(Sensor):
         low, high = self.webcam_blob_threshold
         return np.clip((diff - low) / (high - low), 0.0, 1.0)
 
+    # Added 2026-08-19: human_temp_range above is a purely per-pixel
+    # ABSOLUTE threshold with no notion of shape at all - any pixel in
+    # range counts as foreground on its own, with nothing requiring it to
+    # be part of anything person-sized. Real-hardware feedback: the
+    # environment itself (not just an actual person) started showing up as
+    # scattered "black dots" in the shadow - isolated warm objects/pixels
+    # (electronics, a sunlit patch, plain sensor noise) sit in the same
+    # 24-31C band a person does, and nothing here was rejecting them for
+    # not looking like a contiguous person-sized blob the way a real body
+    # does. This is a spatial (single-frame, no history) coherence filter,
+    # not the temporal baseline-diff approach the class docstring already
+    # explains was tried and dropped (2026-08-11, killed by baseline drift)
+    # - deliberately different failure mode, since this has no state to
+    # drift: it only ever looks at one frame's own neighbour connectivity.
+    #
+    # BLOB_MIN_STRENGTH: only pixels this far into the human_temp_range
+    # band count as "hot enough to seed/extend a blob" - keeps a large
+    # diffuse warm area (e.g. a sunlit wall, barely above the low end)
+    # from chaining together into one giant blob, while a real person
+    # (who should read solidly within the band, not just barely over the
+    # threshold) still connects up fine.
+    # BLOB_MIN_PIXELS: a surviving blob needs at least this many connected
+    # pixels (4-connected) at the sensor's native 32x24 resolution - a lone
+    # noisy pixel or two is exactly the "black dot" symptom; an actual
+    # person at any plausible distance in the room should occupy
+    # noticeably more than a handful of pixels. Both untuned placeholders,
+    # same "feel, not physics, verify on real hardware" caveat as
+    # motion_range/human_temp_range above - if real people are getting
+    # filtered out too, lower BLOB_MIN_PIXELS first (more likely culprit
+    # than BLOB_MIN_STRENGTH, given at 32x24 a person up close is far
+    # fewer pixels than the same person might be at a normal camera's
+    # resolution).
+    BLOB_MIN_STRENGTH = 0.5
+    BLOB_MIN_PIXELS = 4
+
+    def _filter_small_blobs(self, mask, width, height):
+        """Zeroes out any connected (4-neighbour) group of >=BLOB_MIN_STRENGTH
+        pixels smaller than BLOB_MIN_PIXELS - see the comment above for why.
+        Plain flood-fill rather than scipy/cv2's connected-components: the
+        thermal grid is only 768 pixels total, so a hand-rolled BFS is both
+        cheap enough at 8Hz and one less dependency to need on the Pi (cv2
+        is already only a dev-machine webcam fallback, not guaranteed
+        present - see this module's own import guard at the top)."""
+        grid = mask.reshape(height, width)
+        hot = grid >= self.BLOB_MIN_STRENGTH
+        visited = np.zeros_like(hot, dtype=bool)
+        keep = np.zeros_like(hot, dtype=bool)
+
+        for start_y in range(height):
+            for start_x in range(width):
+                if not hot[start_y, start_x] or visited[start_y, start_x]:
+                    continue
+                stack = [(start_y, start_x)]
+                visited[start_y, start_x] = True
+                component = [(start_y, start_x)]
+                while stack:
+                    y, x = stack.pop()
+                    for ny, nx in ((y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1)):
+                        if 0 <= ny < height and 0 <= nx < width and hot[ny, nx] and not visited[ny, nx]:
+                            visited[ny, nx] = True
+                            stack.append((ny, nx))
+                            component.append((ny, nx))
+                if len(component) >= self.BLOB_MIN_PIXELS:
+                    for (cy, cx) in component:
+                        keep[cy, cx] = True
+
+        return np.where(keep, grid, 0.0).flatten()
+
     def read(self) -> dict:
         try:
             frame, is_thermal = self._grab_frame()
@@ -173,7 +259,6 @@ class MotionSensor(Sensor):
             self._mark_failed(RuntimeError("thermal frame looks invalid (I2C read likely failing silently)"))
             return {"motion": random.uniform(0.0, 0.05)}
 
-        mask = self._blob_mask(frame, is_thermal)
         if is_thermal:
             # MLX90640's fixed layout - get_frame() hands back a flat 768-
             # element array with no row/col structure attached, so this
@@ -186,6 +271,15 @@ class MotionSensor(Sensor):
             width, height = 32, 24
         else:
             height, width = frame.shape  # dev-only webcam fallback - already a real 2D (height, width) array
+
+        mask = self._blob_mask(frame, is_thermal)
+        mask = self._filter_small_blobs(mask, width, height)  # strip isolated dots BEFORE smoothing, not after - see its own comment
+        if self._mask_ema is None or self._mask_ema.shape != mask.shape:
+            self._mask_ema = mask.copy()  # first frame, or resolution changed - nothing to blend against yet
+        else:
+            self._mask_ema += self.MASK_SMOOTHING_ALPHA * (mask - self._mask_ema)
+        mask = self._mask_ema
+
         blob_reading = {
             "thermal_mask": mask.flatten().tolist(),
             "thermal_width": width,
