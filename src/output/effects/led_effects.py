@@ -795,14 +795,19 @@ class TempHumidityBarEffect:
        field, not colour-plus-a-separate-texture-layer.
     2. CONTRAST GLIMMER (continuous) - `contrast` (how far indoor
        temperature has drifted from outdoor, main.py's
-       indoor_outdoor_temp_diff) fades in a second, sparser, faster
-       twinkle noise field on top as a brightness boost blended toward a
-       colour sampled from this zone's own palette (never darkens - see
-       _vivid_boost; brightness-only until 2026-08-19, when that read as
-       "just turns white" on cloudy/fog/snow's already fairly desaturated
-       base colours; briefly a self-referential saturation push after
-       that, replaced same day with an actual palette-sampled colour per
-       "take colours from palette" feedback). Indoor ~= outdoor:
+       indoor_outdoor_temp_diff) fades in a whole-segment colour pulse on
+       top, blended toward a colour sampled from this zone's own palette,
+       never darkening the base (see _vivid_boost). Been through a few
+       real-hardware-driven revisions the same day (2026-08-19): started
+       brightness-only, which read as "just turns white" on cloudy/fog/
+       snow's already desaturated base colours; briefly a self-referential
+       saturation push instead; then per-pixel sparkle noise sampling
+       different palette positions per pixel, which didn't read at all on
+       this fixture's segment size ("pixels are too small to make a
+       difference by itself"); settled on the current version, where the
+       WHOLE segment shares one sparkle value and moves through the
+       palette together (see _sparkle's own comment) - "I want full
+       segments just shimmer in different hue". Indoor ~= outdoor:
        bar stays calm. Diverged: visibly glittery. This does NOT try to
        also be the touch reaction (see
        layer 3) - on a hot day outdoor temperature can already sit near
@@ -899,16 +904,35 @@ class TempHumidityBarEffect:
         colour = np.array(self.CONDITION_COLOURS[name], dtype=float)
         return colour[None, :] * brightness[:, None]
 
-    def _sparkle(self, seed: int, x_scale: float, t_scale: float, power: float = 2.0) -> np.ndarray:
+    def _sparkle(self, seed: int, t_scale: float, power: float = 2.0) -> np.ndarray:
         """Shared sparkle-noise primitive behind both the contrast shimmer
         and the touch burst below - >= 0 always, and raising `power` makes
-        it sparser/glitterier (only near-peak spots of the underlying noise
-        stay visible) rather than a smooth wave. Distinct seed/x_scale/
-        t_scale per caller so the two read as different textures, not just
-        different amounts of the same one."""
-        x = np.arange(self.n)
-        noise = value_noise(x * x_scale, np.full(self.n, self.t * t_scale), seed=seed)
-        return np.clip(noise, 0.0, None) ** power
+        it peakier/glitterier (settles closer to 0 between peaks) rather
+        than a smooth wave.
+
+        Remapped from value_noise's raw ~[-1, 1] to [0, 1] (2026-08-19) -
+        clipping negative noise straight to 0 (the original version) meant
+        the shimmer went to a flat, total zero for roughly half of any
+        noise cycle, not just dimmer - direct contributor to "can't see
+        much hue change", since testing could easily land in one of those
+        dead stretches. Remapping instead of clipping keeps it
+        continuously oscillating, always contributing at least a little.
+
+        Spatially UNIFORM as of 2026-08-19 (dropped the x_scale param that
+        used to vary this per-pixel) - real-hardware feedback: this DMX
+        bar's 28 segments are individually too small to resolve a
+        per-pixel sparkle pattern at all ("pixels are too small to make a
+        difference by itself"), so the fine noise texture just read as
+        nothing. One noise value per tick, shared by every pixel, still
+        varies over TIME (still a real shimmer/pulse, just the whole
+        segment moves together instead of scattering across pixels) - see
+        _vivid_boost below, which now blends the whole frame toward one
+        shared accent colour instead of a different one per pixel.
+        Distinct seed/t_scale per caller so shimmer and touch-burst still
+        read as different textures, not just different amounts of the
+        same one."""
+        noise = value_noise(np.array([0.0]), np.array([self.t * t_scale]), seed=seed)[0]
+        return np.full(self.n, ((float(noise) + 1.0) * 0.5) ** power)
 
     # How much of _vivid_boost's brightness multiplier survives alongside
     # the hue blend - real-hardware feedback 2026-08-19: with this at 1.0
@@ -946,31 +970,34 @@ class TempHumidityBarEffect:
         showed the brightness term was still dominating perception over
         the hue one, particularly on fog/snow.
 
-        Which palette colour: driven by the sparkle noise field itself
-        (already computed per caller, normalised against its own peak
-        this tick), so different sparkle "hot spots" land on different
-        points along the palette gradient instead of every sparkle
-        pulling toward one fixed accent - gives the shimmer genuine
-        colour variety, not a single flat tint. Blend fraction clamped to
-        [0, 1] (fully at the sampled palette colour at most, never
-        overshooting past it) separately from the brightness multiplier,
-        which is free to exceed 1 as before - glimmer only ever adds on
-        top of the ambient base, never darkens it."""
+        Which palette colour: sparkle (spatially uniform as of 2026-08-19 -
+        see _sparkle's own comment) is used directly as a position along
+        the palette gradient, so the WHOLE segment picks the same accent
+        colour at any instant and drifts smoothly along the gradient over
+        time as the underlying noise evolves - one shared shimmer colour
+        moving together, not scattered per-pixel variety (that per-pixel
+        version was the original design here, dropped the same day once
+        real-hardware testing showed individual segments were too small
+        to resolve it - "I want full segments just shimmer in different
+        hue"). Blend fraction clamped to [0, 1] (fully at the sampled
+        palette colour at most, never overshooting past it) separately
+        from the brightness multiplier, which is free to exceed 1 as
+        before - glimmer only ever adds on top of the ambient base, never
+        darkens it."""
         strength = (sparkle * max_boost)[:, None]
-        norm = sparkle / max(float(sparkle.max()), 1e-6)  # 0..1 relative to this tick's own peak sparkle
-        accent = self.lut[(norm * (len(self.lut) - 1)).astype(int)].astype(float)
-        vivid = frame + (accent - frame) * np.clip(strength, 0.0, 1.0)
+        accent = self.lut[int(np.clip(sparkle[0], 0.0, 1.0) * (len(self.lut) - 1))].astype(float)
+        vivid = frame + (accent[None, :] - frame) * np.clip(strength, 0.0, 1.0)
         return vivid * (1.0 + strength * self.VIVID_BRIGHTNESS_RATIO)
 
     def _shimmer_boost(self, frame: np.ndarray, contrast: float) -> np.ndarray:
-        sparkle = self._sparkle(seed=11, x_scale=1.4, t_scale=2.2) * contrast
+        sparkle = self._sparkle(seed=11, t_scale=2.2) * contrast
         return self._vivid_boost(frame, sparkle, self.SHIMMER_MAX_BOOST)
 
     def _touch_burst_boost(self, frame: np.ndarray, pulse_level: float) -> np.ndarray:
-        """Same shape as _shimmer_boost but a faster, sparser, much stronger
-        sparkle - see class docstring on why a touch is a bigger/quicker
-        burst of the same texture rather than a solid colour wash."""
-        sparkle = self._sparkle(seed=13, x_scale=2.2, t_scale=6.0, power=3.0) * pulse_level
+        """Same shape as _shimmer_boost but a faster, much stronger pulse -
+        see class docstring on why a touch is a bigger/quicker burst of
+        the same effect rather than a solid colour wash."""
+        sparkle = self._sparkle(seed=13, t_scale=6.0, power=3.0) * pulse_level
         return self._vivid_boost(frame, sparkle, self.TOUCH_BURST_MAX_BOOST)
 
     def _update_touch_pulse(self, temperature: float, dt: float) -> float:
