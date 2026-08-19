@@ -43,31 +43,41 @@ function paintSwatchStrip(ctx, canvas, frame) {
   ctx.putImageData(imageData, 0, 0);
 }
 
-// Mirrors main.py's _resolve_one_source - same dot-path walk (and the same
-// optional {path, min, max} range-mapping) into the same payload the
-// server already sends every tick, so the dashboard/admin panel can show
-// "why" a zone looks the way it does without the server needing to publish
-// a separately-computed value.
+// Mirrors main.py's _resolve_one_source - same dot-path walk and the same
+// optional {path, min, max} range-mapping - so the dashboard/admin panel
+// can show "why" a zone looks the way it does without the server needing
+// to publish a separately-computed value.
+//
+// Deliberately displays the raw real-world reading (e.g. real BPM, real
+// °C) when a {path, min, max} range is configured, NOT the 0..1 value that
+// range-mapping actually produces for the effect - that 0..1 fraction is
+// what a zone's effect receives internally, but as a *readout* it was
+// unreadable (reported 2026-08-19: heart_rate's bpm showing as "0.48" with
+// no way to tell that's ~107 real bpm without doing the {min:40, max:180}
+// math by hand). A plain string source (no range) is already a native 0..1
+// signal (motion, ripple, ...) with no real-world unit to show instead, so
+// those still clamp/display as 0..1 same as before.
 function resolveOneSource(data, spec) {
   const path = typeof spec === "string" ? spec : spec.path;
   const lo = typeof spec === "string" ? undefined : spec.min;
   const hi = typeof spec === "string" ? undefined : spec.max;
+  const ranged = lo !== undefined && hi !== undefined && hi !== lo;
 
   let value = data;
   for (const part of path.split(".")) {
     if (typeof value !== "object" || value === null || !(part in value)) return 0.0;
     value = value[part];
   }
-  if (typeof value === "boolean") return value ? 1.0 : 0.0;
+  if (typeof value === "boolean") value = value ? 1.0 : 0.0;
   if (typeof value !== "number") return 0.0;
 
-  if (lo !== undefined && hi !== undefined && hi !== lo) {
-    value = (value - lo) / (hi - lo);
-  }
-  return Math.min(Math.max(value, 0.0), 1.0);
+  if (!ranged) return Math.min(Math.max(value, 0.0), 1.0);
+  return Math.min(Math.max(value, lo), hi);
 }
 
-// { name: 0..1 value, ... } for every named source a zone declares.
+// { name: value, ... } for every named source a zone declares - real-world
+// units where the zone config gives a {min, max} range to convert with,
+// otherwise the native 0..1 signal (see resolveOneSource above).
 function resolveSources(data, sourceMap) {
   const resolved = {};
   for (const name in sourceMap) {
