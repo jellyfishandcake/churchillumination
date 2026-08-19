@@ -17,8 +17,8 @@ DEFAULTS = {
         # map + sketch-canvas sampling (see main.py's main()). Doesn't map to
         # one physical chain anymore - see "strips" below for that. Keep
         # this equal to the sum of every led zone's output.pixels: heart_rate
-        # 60 + accelerometer 94 (4 arms, 36+20+16+22 - see
-        # TriArmGlideEffect.ARM_LENGTHS). temp_humidity is a DMX bar, not
+        # 60 + accelerometer 94 (5 arm segments, 19+17+20+16+22 - see
+        # ShakeFireworkEffect.ARM_LENGTHS). temp_humidity is a DMX bar, not
         # counted here.
         "num_pixels": 154,
         "layout": "strip",
@@ -135,11 +135,15 @@ DEFAULTS = {
             },
             {
                 "name": "accelerometer",
-                "effect": "tri_arm_glide", "palette": "autumn",
-                # angle rescaled the same way temperature/humidity are -
-                # accel_stick's raw [0, 360) swing angle maps to 0..1, see
-                # TriArmGlideEffect's docstring. This used to be a single-
-                # pixel DMX fixture (DirectionalWaveEffect) - now a
+                "effect": "shake_firework", "palette": "autumn",
+                # No `angle` any more (was: accel_stick's raw [0, 360) swing
+                # direction rescaled to 0..1) - replaced 2026-08-19 by
+                # ShakeFireworkEffect, which fires every arm at once on a
+                # vigorous shake rather than mapping swing direction onto
+                # specific arms. See its own docstring for why (direction
+                # sensing on a handheld stick never got reliable across
+                # several real-hardware sessions). This used to be a
+                # single-pixel DMX fixture (DirectionalWaveEffect) - now a
                 # continuous-strip `led` zone instead, on its own independent
                 # chain (accelerometer_strip, SPI1) - NOT data-connected to
                 # heart_rate, since the physical design moved to arms
@@ -148,13 +152,10 @@ DEFAULTS = {
                 # than one spliced-together strip.
                 "source": {
                     "intensity": "sensors.acceleration",
-                    "angle": {"path": "sensors.angle_deg", "min": 0, "max": 360},
                 },
-                # 94 = 36+20+16+22, confirmed 2026-08-10 post-soldering: 4
-                # arms (design changed from the original 3-arm idea),
-                # unequal lengths, angles 20/45/90/135 (approximate, arm 3
-                # straight up), arms 2+4 wired tip-to-hub - see
-                # TriArmGlideEffect.ARM_LENGTHS/ARM_ANGLES_DEG/ARM_REVERSED.
+                # 94 = 19+17+20+16+22, confirmed 2026-08-10 post-soldering
+                # (arm lengths) + 2026-08-19 (arm 1 split into 2 wiring
+                # segments) - see ShakeFireworkEffect.ARM_LENGTHS/ARM_REVERSED.
                 "output": {"type": "led", "strip": "accelerometer_strip", "pixels": 94},
             },
         ],

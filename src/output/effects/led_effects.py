@@ -193,7 +193,7 @@ class AudioReactiveWaveEffect:
     isn't the right vehicle for this zone's visual response).
 
     `loudness` picks a position in the palette gradient (same idea as
-    TriArmGlideEffect's per-arm palette_index), `motion`
+    ShakeFireworkEffect's per-arm palette_index), `motion`
     controls how fast the wave flows, `env_brightness` (from the
     multisensor stick's lux reading) keeps the strip visible against the
     room's own light rather than reacting to loudness/motion at all, and
@@ -431,152 +431,91 @@ class ReactiveGlowEffect:
         return np.clip(frame, 0, 255).astype(np.uint8)
 
 
-class TriArmGlideEffect:
+class ShakeFireworkEffect:
     """For the accelerometer zone's LED arms radiating from a shared hub,
     spliced into the same continuous APA102 chain as the heart_rate zone
-    (not a standalone DMX fixture like the single-bar DirectionalWaveEffect
-    this replaces) - see accel_stick.ino's atan2-based `angle_deg` and
-    config.py's accelerometer zone. Name/class kept as "tri" from the
-    original 3-arm-at-120-degrees design even though the physical build
-    (confirmed 2026-08-07) settled on 4 arms at ergonomics/visual-design-
-    driven angles, not an even split - ARM_COUNT below is what actually
-    governs arm count, not the class name.
+    (not a standalone DMX fixture) - see config.py's accelerometer zone.
 
-    `angle` arrives pre-rescaled to 0..1 by main.py's _resolve_one_source
-    (the zone's source config supplies {min: 0, max: 360} - see config.py)
-    and is converted back to radians here. `intensity` is the shake's
-    magnitude, same signal DirectionalWaveEffect used. See
-    accel_stick.ino's readAcceleration() for what angle_deg actually is -
-    as of firmware version 2026-08-19, a gyro+accel-fused (Madgwick)
-    WORLD-frame swing direction, not a raw per-tick atan2 of the board's
-    own body-frame axes (that raw version made the stick's current grip
-    rotation matter as much as the actual swing direction - see
-    accel_stick.ino's own version comment for the full story and its
-    caveats, e.g. "0 degrees" isn't an absolute compass heading, just
-    wherever the stick pointed at power-on). Wire contract to this Python
-    side is unchanged either way: still one angle in [0, 360) over the
-    horizontal plane - if a swing's landing on the wrong arm consistently
-    (not just noisy/random), recalibrate ARM_ANGLES_DEG below, not this
-    effect's angle-to-arm mapping.
+    REPLACED TriArmGlideEffect 2026-08-19. That version mapped accel_stick's
+    swing ANGLE onto whichever arm(s) the direction pointed toward - real-
+    hardware feedback across several sessions ("cannot seem to find a set
+    coordinate system") never got that reliably working: a handheld
+    stick's orientation is inherently hard to track accurately without
+    heavier sensor fusion than was worth the remaining time, and even the
+    fusion attempts (gyro+accel, then +magnetometer) each surfaced their
+    own real problems. Deliberate simplification, not a fallback: drop
+    direction entirely. A vigorous shake, in ANY orientation, fires every
+    arm at once from the hub - a firework burst, not a directional glide.
+    accel_stick only needs to report shake magnitude for this - see its
+    own file for whether the angle-sensing code was kept (unused by this
+    effect either way) or stripped back out.
 
-    REDESIGNED 2026-08-17 from a continuous per-tick reactive glide into a
-    swing-detect-then-fire-a-beam model with hysteresis + a buffered,
-    averaged direction - real handheld shakes are noisy tick to tick, so
-    reacting to every instant made the response feel twitchy/glitchy.
-    REDESIGNED AGAIN 2026-08-18, same day it was first confirmed on real
-    hardware: that version only fired once a swing fully *ended* (intensity
-    dropping back below a second, lower threshold) - reported back as "it
-    slowly started having lights after I stopped", i.e. the reaction was
-    delayed until the motion completely settled, and the beam speed itself
-    read as "a snail climbing the arm" rather than the "quick little thing"
-    that gives an instantaneous-feeling interaction. Per that feedback, the
-    whole buffer-and-wait-for-settle mechanism is gone:
+    INSTANT TRIGGER: a single threshold (SHAKE_TRIGGER_THRESHOLD) - the
+    moment `intensity` crosses it, every arm fires immediately using that
+    tick's own intensity, no waiting, no averaging a window of samples
+    (same reasoning TriArmGlideEffect's history already established: an
+    earlier "wait for the swing to fully settle" version read as delayed
+    and sluggish - see git history if reviving that idea). Deliberately a
+    higher bar than the old SWING_TRIGGER_THRESHOLD (0.15, tuned for "any
+    real swing, not just jitter") - this is meant to read as "vigorous",
+    a bigger, rarer payoff, not the default response to ordinary handling.
+    SHAKE_COOLDOWN_SECONDS is the only thing standing between one trigger
+    and the next - long enough that one continuous held-above-threshold
+    shake doesn't refire and restart every beam each tick (which would
+    just read as all arms solidly lit rather than distinct bursts), short
+    enough that genuinely separate vigorous shakes each register.
 
-    INSTANT TRIGGER: a single threshold (SWING_TRIGGER_THRESHOLD) - the
-    moment `intensity` crosses it, a beam fires immediately using THAT
-    tick's own (intensity, angle), no waiting, no averaging a window of
-    samples. SWING_COOLDOWN_SECONDS is the only thing standing between one
-    trigger and the next - short enough (0.12s) that genuinely separate
-    quick swings each register on their own, but long enough that one
-    continuous held-above-threshold reading doesn't refire and restart the
-    same beam every single 0.05s tick, which would just read as the arm
-    solidly lit rather than a distinct travelling beam. This is also what
-    gives "shake violently in many directions" its firework quality for
-    free, with no separate "violent" detection needed: each quick
-    direction-change that clears the cooldown is its own independent
-    trigger, on whichever arm(s) that instant's angle aligns with - a
-    single controlled swing reads as one shooting star, a wild multi-
-    directional shake reads as several, potentially on different arms,
-    firing in quick succession.
+    BEAM RENDERING: unchanged in spirit from TriArmGlideEffect - each arm
+    gets its own travelling beam, hub -> tip, speed/width/brightness all
+    scaling with `intensity`. Only difference: every arm is driven by the
+    SAME intensity now (no per-arm alignment weight, since there's no
+    direction to be aligned/misaligned with any more) - the whole point is
+    that a vigorous shake looks the same regardless of how you happen to
+    be holding or moving the stick.
 
-    BEAM RENDERING: the triggering (intensity, angle) spawns one travelling
-    beam per arm whose cosine-weighted alignment to that angle clears
-    MIN_ARM_WEIGHT (see the dead-zone/overlap caveat below, still just as
-    true here). Each arm's beam travels hub -> tip at a speed set by
-    (intensity * that arm's own alignment weight) * BEAM_SPEED_SCALE - the
-    scale itself raised sharply (1.6 -> 7.0) so even a moderate swing
-    crosses the longest arm (36px) in well under half a second, not
-    several seconds; BEAM_DECAY also raised to match (a fast head with a
-    slow-fading trail would just look like the whole arm lighting up solid
-    rather than a distinct streak). Brightness and pixel-width scale the
-    same way a harder, more on-target swing has always produced a beam
-    that's faster, brighter, AND wider, not just brighter. Reaching the tip
-    ends that arm's beam. A new trigger on an arm already mid-beam just
-    replaces it outright, no blending between the two - matches "quick,
-    immediate feedback" better than queuing would.
+    ARM_LENGTHS: 5 segments, chain order (segment 0 is whichever pixel the
+    data line reaches first out of accelerometer_strip). Physically still
+    the same 4 arms as TriArmGlideEffect's 36/20/16/22 (confirmed
+    2026-08-10 post-soldering) - what changed is arm 1 (the 36px one) is
+    now treated as two segments (19 + 17) instead of one, because its
+    wiring doesn't run hub-to-tip for its whole length: the first 19
+    pixels in chain order actually run the WRONG way for an outward-
+    radiating firework (tip-to-hub, i.e. ARM_REVERSED=True for that
+    sub-segment), then the remaining 17 continue in the correct
+    hub-to-tip direction (ARM_REVERSED=False) - see ARM_REVERSED below,
+    confirmed 2026-08-19. Arms 2/3/4 (now segments 2/3/4 in this list)
+    keep their original lengths and reversed flags unchanged from
+    TriArmGlideEffect. If the zone's real n_pixels doesn't match
+    sum(ARM_LENGTHS) (e.g. a config typo), the last segment absorbs the
+    difference so the strip is still exactly filled, same "pad the odd
+    one out" idea output_loop uses for a mismatched zone."""
 
-    Each arm claims a smooth ~180-degree-wide slice of the circle centred
-    on its own spoke, via a clamped cosine falloff: weight = max(0,
-    cos(angle - arm_centre)). This self-limiting-to-two-arms property (each
-    weight window is exactly 180 degrees wide, so two windows only overlap
-    if their centres are within 180 degrees of each other - never all-zero,
-    never more than two nonzero at typical spacings) only strictly holds
-    when arms are evenly spaced *and* no closer together than 120 degrees;
-    with ARM_ANGLES_DEG now arbitrary/ergonomic rather than an even split,
-    arms placed closer together than that can overlap into 3+ simultaneously
-    weighted arms, or (if two arms end up more than 180 degrees apart from
-    every other arm) leave a dead gap where no arm has positive weight for a
-    stretch of angles. With the confirmed angles (20/45/90/135, all bunched
-    into a 115-degree span) this isn't hypothetical - checked numerically:
-    3+ arms carry positive weight simultaneously across most of the 0-135
-    degree arc (unsurprising, given how close together 20/45/90/135 are),
-    and there's a genuine ~65-degree dead zone from about 226 to 290 degrees
-    (roughly opposite the arm cluster) where every arm's weight is exactly
-    0 - swinging the stick into that range currently lights nothing. Test on
-    real hardware once flashed; if the dead zone or overlap reads badly, a
-    narrower falloff than a plain cosine (e.g. raising the cos term to a
-    power before clamping) is the fix, not a change to the angles
-    themselves - the dead zone in particular may be fine as-is if that
-    swing direction isn't ergonomically reachable anyway.
+    ARM_COUNT = 5
+    ARM_LENGTHS = (19, 17, 20, 16, 22)                    # confirmed 2026-08-19 - see docstring (19+17=36, same physical arm 1 as before, now 2 segments)
+    ARM_REVERSED = (True, False, True, False, True)       # confirmed 2026-08-19 - see docstring
 
-    ARM_LENGTHS gives each arm's pixel count explicitly (confirmed
-    2026-08-10 post-soldering: 36/20/16/22, physically unequal, so the old
-    "split n_pixels evenly across ARM_COUNT" approach doesn't apply) - arm
-    order here is the physical chain order (arm 0 is whichever arm's pixels
-    the data line reaches first out of accelerometer_strip, not an arbitrary
-    label), and ARM_ANGLES_DEG/ARM_REVERSED below are given in that same
-    order. If the actual zone's n_pixels doesn't match sum(ARM_LENGTHS) (e.g.
-    a config typo), the last arm absorbs the difference so the strip is
-    still exactly filled, same "pad the odd one out" idea output_loop uses
-    for a mismatched zone.
+    # Shake detection - untuned placeholders (feel, not physics, same
+    # caveat as accel_stick.ino's SENSITIVITY). SHAKE_TRIGGER_THRESHOLD is
+    # deliberately higher than TriArmGlideEffect's old SWING_TRIGGER_THRESHOLD
+    # (0.15) - see class docstring's INSTANT TRIGGER section for why.
+    # SHAKE_COOLDOWN_SECONDS back down near that old value (was briefly
+    # 0.25 - reverted 2026-08-19 per explicit "quick, so the next one can
+    # come" feedback: this is the only thing standing between one firework
+    # and the next, so it should favour rapid repeats, not add ceremony).
+    SHAKE_TRIGGER_THRESHOLD = 0.5   # intensity crossing this fires every arm immediately
+    SHAKE_COOLDOWN_SECONDS = 0.12   # minimum gap between two triggers
 
-    ARM_ANGLES_DEG (confirmed 2026-08-10, approximate - a closer on-site
-    remeasurement is still expected, these are eyeballed not precision-
-    measured) and ARM_REVERSED (confirmed 2026-08-10) - angles are
-    ergonomic/visual-design choices, not an even split (20/45/90/135
-    degrees - arm 3 at 90 is straight up), and wiring direction is driven by
-    physical routing/cable-run constraints, not a simple alternating
-    pattern (arms 2 and 4 are wired tip-to-hub, 1 and 3 hub-to-tip, per
-    which end of each arm the physical cable run made easiest to reach).
-    To refine the angles further: swing the stick toward each arm in turn
-    and watch `sensors.angle_deg` on the admin dashboard, and update the
-    entry below to whatever it actually reads."""
-
-    ARM_COUNT = 4
-    ARM_LENGTHS = (36, 20, 16, 22)                  # confirmed 2026-08-10 post-soldering - see docstring, chain order
-    ARM_ANGLES_DEG = (20.0, 45.0, 90.0, 135.0)      # confirmed 2026-08-10, approximate - see docstring
-    ARM_REVERSED = (False, True, False, True)       # confirmed 2026-08-10 - arms 2 and 4 wired tip-to-hub, see docstring
-
-    # Swing detection - untuned placeholders (feel, not physics, same
-    # caveat as accel_stick.ino's SENSITIVITY), but SWING_TRIGGER_THRESHOLD
-    # deliberately matches accel_stick.ino's own SWING_INVITE_HIDE_ABOVE
-    # (0.15) - the firmware's own on-screen UI already treats that as "a
-    # real swing, not just jitter", so there's no reason for this effect to
-    # disagree about what counts as one.
-    SWING_TRIGGER_THRESHOLD = 0.15  # intensity crossing this fires a beam immediately - see class docstring's INSTANT TRIGGER section
-    SWING_COOLDOWN_SECONDS = 0.12   # minimum gap between two triggers - short enough that quick successive swings each register
-    MIN_ARM_WEIGHT = 0.15           # below this cosine-alignment to the swing direction, an arm doesn't get a beam at all
-
-    # Beam rendering - also untuned placeholders, but deliberately much
-    # faster than the first real-hardware version (BEAM_SPEED_SCALE 1.6,
-    # BEAM_DECAY 0.88) per explicit "too slow, like a snail" feedback -
-    # 7.0/0.7 crosses even the longest arm (36px) in well under half a
-    # second at full strength and leaves a short, fast-fading streak
-    # instead of a slow, long-lingering one.
-    BEAM_SPEED_SCALE = 7.0         # pixels/tick at (intensity * arm weight) = 1.0
-    BEAM_WIDTH_MIN_PX = 2          # pixels lit around the beam's leading edge at driven strength -> 0
-    BEAM_WIDTH_MAX_PX = 8          # ... at driven strength -> 1 - "more pixels pack" for a harder/more-aligned swing
-    BEAM_DECAY = 0.7               # per-tick trail fade behind a travelling beam - raised (lowered?) to match the faster beam, see above
+    # Beam rendering - carried over from TriArmGlideEffect's own already-
+    # tuned-by-feedback numbers, then pushed further 2026-08-19 (7.0/0.7 ->
+    # 9.0/0.6) per the same "quick" feedback as the cooldown above - a
+    # firework burst should read as a sudden pop, not a lingering glide,
+    # and resolving faster is also what actually lets the next trigger's
+    # burst read as distinct rather than overlapping the previous one's
+    # fading tail. Still untuned-placeholder, verify on real hardware.
+    BEAM_SPEED_SCALE = 9.0         # pixels/tick at intensity = 1.0
+    BEAM_WIDTH_MIN_PX = 2          # pixels lit around the beam's leading edge at intensity -> 0
+    BEAM_WIDTH_MAX_PX = 8          # ... at intensity -> 1
+    BEAM_DECAY = 0.6               # per-tick trail fade behind a travelling beam
 
     def __init__(self, n_pixels, palette, background_level=0.05):
         self.lut = _palette_lut(palette)
@@ -584,51 +523,43 @@ class TriArmGlideEffect:
         self.trail = np.zeros(n_pixels)
 
         lengths = list(self.ARM_LENGTHS)
-        lengths[-1] += n_pixels - sum(lengths)  # last arm absorbs any mismatch against the zone's real pixel count
+        lengths[-1] += n_pixels - sum(lengths)  # last segment absorbs any mismatch against the zone's real pixel count
         starts = np.cumsum([0] + lengths[:-1]).tolist()
-        self.arm_ranges = list(zip(starts, lengths))  # (start, length) per arm, in the shared trail array
-        self.arm_center_rad = [np.radians(deg) for deg in self.ARM_ANGLES_DEG]
+        self.arm_ranges = list(zip(starts, lengths))  # (start, length) per segment, in the shared trail array
 
         self._cooldown_remaining = 0.0
         self._beams = {}  # arm_index -> {"pos", "speed", "width", "brightness"} for each currently-travelling beam
 
     def _to_index(self, arm_idx: int, dist: int) -> int:
-        """Hub-relative distance along one arm -> real index in the shared trail array."""
+        """Hub-relative distance along one arm segment -> real index in the shared trail array."""
         start, length = self.arm_ranges[arm_idx]
         return start + (length - 1 - dist) if self.ARM_REVERSED[arm_idx] else start + dist
 
-    def _fire(self, intensity: float, angle_rad: float):
-        """Spawn a beam on every arm whose cosine-weighted alignment to
-        this instant's angle clears MIN_ARM_WEIGHT - see class docstring's
-        INSTANT TRIGGER / BEAM RENDERING sections."""
+    def _fire(self, intensity: float):
+        """Spawn a beam on every arm segment at once - see class
+        docstring's INSTANT TRIGGER / BEAM RENDERING sections."""
         for k in range(self.ARM_COUNT):
             _, length = self.arm_ranges[k]
             if length == 0:
                 continue
-            weight = max(0.0, np.cos(angle_rad - self.arm_center_rad[k]))
-            if weight < self.MIN_ARM_WEIGHT:
-                continue
-            driven = intensity * weight
             self._beams[k] = {
                 "pos": 0.0,
-                "speed": driven,
-                "width": self.BEAM_WIDTH_MIN_PX + (self.BEAM_WIDTH_MAX_PX - self.BEAM_WIDTH_MIN_PX) * driven,
-                "brightness": scaled(driven, 0.3, 1.0),
+                "speed": intensity,
+                "width": self.BEAM_WIDTH_MIN_PX + (self.BEAM_WIDTH_MAX_PX - self.BEAM_WIDTH_MIN_PX) * intensity,
+                "brightness": scaled(intensity, 0.3, 1.0),
             }
 
-    def step(self, intensity: float = 0.0, angle: float = 0.0, dt: float = ASSUMED_TICK_SECONDS):
+    def step(self, intensity: float = 0.0, dt: float = ASSUMED_TICK_SECONDS):
         intensity = min(max(intensity, 0.0), 1.0)
-        angle = min(max(angle, 0.0), 1.0)
-        angle_rad = angle * 2 * np.pi
 
         # Cooldown is a real countdown in seconds - dt substitutes directly
         # for the old fixed-TICK_SECONDS assumption, no ratio/exponent
         # needed (unlike BEAM_SPEED_SCALE/BEAM_DECAY below, which were
         # tuned as per-assumed-tick rates).
         self._cooldown_remaining = max(0.0, self._cooldown_remaining - dt)
-        if intensity > self.SWING_TRIGGER_THRESHOLD and self._cooldown_remaining <= 0.0:
-            self._fire(intensity, angle_rad)
-            self._cooldown_remaining = self.SWING_COOLDOWN_SECONDS
+        if intensity > self.SHAKE_TRIGGER_THRESHOLD and self._cooldown_remaining <= 0.0:
+            self._fire(intensity)
+            self._cooldown_remaining = self.SHAKE_COOLDOWN_SECONDS
 
         self.trail *= _decay_scale(self.BEAM_DECAY, dt)
         for k in list(self._beams.keys()):
@@ -649,9 +580,8 @@ class TriArmGlideEffect:
             start, length = self.arm_ranges[k]
             if length == 0:
                 continue
-            # Each arm gets a distinct spot in the palette gradient, so which
-            # arm is lit reads visually too, not just spatially - same idea
-            # DirectionalWaveEffect used direction for, just per-arm instead.
+            # Each arm segment gets a distinct spot in the palette gradient,
+            # so which arm's lit reads visually too, not just spatially.
             palette_index = int((k / max(1, self.ARM_COUNT - 1)) * (len(self.lut) - 1))
             color = self.lut[palette_index].astype(float)
             seg_trail = self.trail[start:start + length][:, None]
@@ -864,9 +794,12 @@ class TempHumidityBarEffect:
     2. CONTRAST GLIMMER (continuous) - `contrast` (how far indoor
        temperature has drifted from outdoor, main.py's
        indoor_outdoor_temp_diff) fades in a second, sparser, faster
-       twinkle noise field on top as a brightness-only boost (never
-       darkens). Indoor ~= outdoor: bar stays calm. Diverged: visibly
-       glittery. This does NOT try to also be the touch reaction (see
+       twinkle noise field on top as a brightness+saturation boost (never
+       darkens/desaturates - see _vivid_boost; brightness-only until
+       2026-08-19, when that read as "just turns white" on cloudy/fog/
+       snow's already fairly desaturated base colours). Indoor ~= outdoor:
+       bar stays calm. Diverged: visibly glittery. This does NOT try to
+       also be the touch reaction (see
        layer 3) - on a hot day outdoor temperature can already sit near
        body temperature, so a warm hand wouldn't reliably move contrast
        much even though a touch has genuinely happened.
@@ -923,6 +856,13 @@ class TempHumidityBarEffect:
         "storm": (1.0, 0.5, 0.75),
     }
     SHIMMER_MAX_BOOST = 0.6      # brightness boost added at contrast=1.0 (0 = no glimmer at all)
+    # How much extra saturation-push rides along with the brightness boost
+    # above (both layer 2 and layer 3 - see _vivid_boost) - 1.0 means the
+    # saturation push grows at the same rate as the brightness one; higher
+    # = shimmer reads as more "colour gets richer", lower = closer to the
+    # old pure-brightness behaviour. Untuned placeholder, verify on real
+    # hardware especially against fog/snow's similarly pale base colours.
+    SATURATION_BOOST_RATIO = 1.0
     TOUCH_WINDOW_SECONDS = 6.0   # how far back the touch-delta looks
     TOUCH_TRIGGER_DELTA = 0.12   # rise (in the 0..1 rescaled temperature units) over that window that counts as "someone touched the sensor"
     COOLDOWN_RESET_FRACTION = 0.5  # re-arms once the rise drops back below TOUCH_TRIGGER_DELTA * this - stops one long touch refiring every tick
@@ -966,18 +906,40 @@ class TempHumidityBarEffect:
         noise = value_noise(x * x_scale, np.full(self.n, self.t * t_scale), seed=seed)
         return np.clip(noise, 0.0, None) ** power
 
-    def _shimmer_boost(self, contrast: float) -> np.ndarray:
-        """Brightness-only multiplier, >= 1.0 always - glimmer only ever
-        adds sparkle on top of the ambient base, never darkens it."""
-        sparkle = self._sparkle(seed=11, x_scale=1.4, t_scale=2.2)
-        return 1.0 + sparkle * contrast * self.SHIMMER_MAX_BOOST
+    def _vivid_boost(self, frame: np.ndarray, sparkle: np.ndarray, max_boost: float) -> np.ndarray:
+        """Shared by both layer 2 (contrast shimmer) and layer 3 (touch
+        burst) - boosts brightness AND saturation together, not brightness
+        alone. Added 2026-08-19: the original pure-brightness version
+        scaled every channel by the same factor, which preserves a
+        colour's saturation/hue exactly rather than adding any - fine for
+        a strongly saturated base like "clear"'s golden (255,200,80), but
+        on cloudy's own fairly desaturated blue-grey (140,150,160) a
+        brightness-only sparkle just reads as "this spot got paler", which
+        human colour perception reads as "turning white" specifically on
+        an already low-chroma colour (real complaint: "the shimmer effect
+        is white ... super hard to see for cloudy conditions" - fog/snow's
+        bases are similarly desaturated and would hit the same problem,
+        just not yet reported). Pushing each pixel away from its own luma
+        (mean of R/G/B) as well as brightening it means a sparkle reads as
+        "this spot got richer/more vivid" instead, which stays visible
+        regardless of how saturated the base colour already is. >= base
+        colour always (both factors are >= 1.0) - glimmer only ever adds
+        on top of the ambient base, never darkens/desaturates it."""
+        strength = (sparkle * max_boost)[:, None]
+        luma = frame.mean(axis=1, keepdims=True)
+        vivid = luma + (frame - luma) * (1.0 + strength * self.SATURATION_BOOST_RATIO)
+        return vivid * (1.0 + strength)
 
-    def _touch_burst_boost(self, pulse_level: float) -> np.ndarray:
+    def _shimmer_boost(self, frame: np.ndarray, contrast: float) -> np.ndarray:
+        sparkle = self._sparkle(seed=11, x_scale=1.4, t_scale=2.2) * contrast
+        return self._vivid_boost(frame, sparkle, self.SHIMMER_MAX_BOOST)
+
+    def _touch_burst_boost(self, frame: np.ndarray, pulse_level: float) -> np.ndarray:
         """Same shape as _shimmer_boost but a faster, sparser, much stronger
         sparkle - see class docstring on why a touch is a bigger/quicker
         burst of the same texture rather than a solid colour wash."""
-        sparkle = self._sparkle(seed=13, x_scale=2.2, t_scale=6.0, power=3.0)
-        return 1.0 + sparkle * pulse_level * self.TOUCH_BURST_MAX_BOOST
+        sparkle = self._sparkle(seed=13, x_scale=2.2, t_scale=6.0, power=3.0) * pulse_level
+        return self._vivid_boost(frame, sparkle, self.TOUCH_BURST_MAX_BOOST)
 
     def _update_touch_pulse(self, temperature: float, dt: float) -> float:
         """Rising-edge detector on raw temperature - see class docstring on
@@ -1016,11 +978,11 @@ class TempHumidityBarEffect:
         self.t += 0.02 * _rate_scale(dt)  # slow, steady drift - condition's own `speed` (CONDITION_CHARACTER) scales how turbulent it looks on top of this
 
         frame = self._ambient_base(self._condition_index(condition))
-        frame = frame * self._shimmer_boost(contrast)[:, None]
+        frame = self._shimmer_boost(frame, contrast)
 
         pulse_level = self._update_touch_pulse(temperature, dt)
         if pulse_level > 0.0:
-            frame = frame * self._touch_burst_boost(pulse_level)[:, None]
+            frame = self._touch_burst_boost(frame, pulse_level)
 
         return np.clip(frame, 0, 255).astype(np.uint8)
 

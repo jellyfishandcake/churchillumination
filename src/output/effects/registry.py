@@ -18,8 +18,10 @@ organic_twinkle/reactive_glow); temp_humidity_bar takes `temperature`
 its own docstring for the three-layer ambient/shimmer/touch design; pulse
 takes `intensity`+`bpm` (bpm times its per-beat
 flash to the wearer's actual heart rate - see PulseEffect's docstring);
-tri_arm_glide takes `intensity`+`angle` (a swing angle rescaled to 0..1 -
-see TriArmGlideEffect's own docstring); audio_reactive_wave takes
+shake_firework takes just `intensity` (a vigorous shake fires every arm
+at once from the hub - see ShakeFireworkEffect's own docstring for why
+this dropped direction/angle entirely, replacing the old tri_arm_glide);
+audio_reactive_wave takes
 `loudness`+`motion`+`env_brightness`+`ripple` (see AudioReactiveWaveEffect's
 own docstring); heart_rate_check_in takes `intensity`+`bpm`, same shape as
 pulse, but drives a distinct start/read/end check-in flow instead of a
@@ -36,16 +38,17 @@ organic_comet's case). temp_humidity_bar is DMX too (as of the weather
 zone's move off the old LED-matrix idea onto a dedicated RGBW bar fixture)
 but isn't a reactive_glow candidate despite that overlap - its source
 shape (`temperature`+`contrast`+`condition`, not `intensity`) doesn't
-reduce to a plain reactive_glow input regardless of segment count. tri_arm_glide is
-specific to the accelerometer zone's three-armed `led` layout (output.type:
-led, one continuous chain split into three equal-ish spokes) - not meant to
-be picked for an arbitrary zone the way the other effects are.
+reduce to a plain reactive_glow input regardless of segment count.
+shake_firework is specific to the accelerometer zone's multi-armed `led`
+layout (output.type: led, one continuous chain split into several spokes)
+- not meant to be picked for an arbitrary zone the way the other effects
+are, even though its source shape (`intensity` alone) would technically fit.
 """
 
 from .led_effects import (
     OrganicWaveEffect, OrganicCometEffect, OrganicTwinkleEffect,
     PulseEffect, TempHumidityBarEffect, ReactiveGlowEffect,
-    TriArmGlideEffect, AudioReactiveWaveEffect, HeartRateEffect,
+    ShakeFireworkEffect, AudioReactiveWaveEffect, HeartRateEffect,
 )
 
 EFFECTS = {
@@ -55,7 +58,7 @@ EFFECTS = {
     "pulse": PulseEffect,
     "temp_humidity_bar": TempHumidityBarEffect,
     "reactive_glow": ReactiveGlowEffect,
-    "tri_arm_glide": TriArmGlideEffect,
+    "shake_firework": ShakeFireworkEffect,
     "audio_reactive_wave": AudioReactiveWaveEffect,
     "heart_rate_check_in": HeartRateEffect,
 }

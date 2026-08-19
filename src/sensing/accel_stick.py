@@ -8,20 +8,23 @@ arrives - same "not part of this Python codebase" situation as nodes.py's
 ESP32S3 presence-node firmware) does its own raw-IMU-to-normalised-
 magnitude conversion on-device and prints one newline-delimited JSON object
 per line, e.g.:
-  {"acceleration": 0.3, "angle_deg": 210.0}\n
+  {"acceleration": 0.3}\n
 
-The Pi side just reads and clamps those numbers - it doesn't need the raw
-axes, since the firmware already did the "deviation from 1g" and atan2 math
-itself. "acceleration" is [0, 1] (shake magnitude); "angle_deg" is [0, 360)
-(which way it's currently leaning/swinging in the horizontal plane - see
-accel_stick.ino's own docstring for why this is a snapshot of lean, not a
-true integrated trajectory). Feeds config.py's accelerometer zone
-(TriArmGlideEffect), which maps this angle onto whichever of its three
-120-degree-apart arms the swing is closest to.
-"angle_deg" defaults to 0.0 if a line omits it - keeps this Python side
-working unmodified against an accel_stick that hasn't been reflashed with
-the angle-reporting firmware yet.
-"""
+The Pi side just reads and clamps that number - it doesn't need the raw
+axes, since the firmware already did the "deviation from 1g" math itself.
+"acceleration" is [0, 1] (shake magnitude) - the only field config.py's
+accelerometer zone uses (ShakeFireworkEffect, which fires every arm at
+once on a vigorous shake, no direction involved).
+
+Simplified 2026-08-19: this used to also read/clamp an "angle_deg" field
+(the firmware's own swing-direction estimate, atan2 then later a full
+gyro+accel+magnetometer fusion stack - see accel_stick.ino's git history),
+feeding the old TriArmGlideEffect's direction-mapped arm selection.
+Direction sensing on a handheld stick never got reliably working across
+several real-hardware sessions, and ShakeFireworkEffect replaced that
+whole design with an omnidirectional shake trigger that only ever needed
+shake magnitude - so both accel_stick.ino and this file dropped
+angle_deg entirely rather than carry an unused field forward."""
 import json
 import random
 import time
@@ -42,7 +45,6 @@ class AccelStickSensor(Sensor):
         super().__init__()
         self._serial = None
         self._latest_acceleration = 0.0
-        self._latest_angle_deg = 0.0
         self._latest_at = 0.0
         self._rx_buffer = b""  # bytes received so far that don't yet form a complete newline-terminated line
 
@@ -65,12 +67,12 @@ class AccelStickSensor(Sensor):
         issue tracker, e.g. github.com/pyserial/pyserial/issues/248) - since
         this poll and the M5Stick's own ~20Hz send loop aren't synchronised,
         that was silently truncating JSON mid-line on most polls, which
-        failed json.loads() and got discarded every time - acceleration/
-        angle_deg then never left their 0.0 defaults despite the stick
-        genuinely sending valid data the whole time (confirmed 2026-08-14:
-        raw serial via `cat` showed clean JSON while this class reported
-        exact zero). Buffering raw bytes across polls instead means a line
-        split across two polls still gets assembled correctly before
+        failed json.loads() and got discarded every time - acceleration
+        then never left its 0.0 default despite the stick genuinely
+        sending valid data the whole time (confirmed 2026-08-14: raw
+        serial via `cat` showed clean JSON while this class reported exact
+        zero). Buffering raw bytes across polls instead means a line split
+        across two polls still gets assembled correctly before
         json.loads() ever sees it."""
         try:
             chunk = self._serial.read(self._serial.in_waiting)
@@ -91,11 +93,9 @@ class AccelStickSensor(Sensor):
                 try:
                     payload = json.loads(line.decode().strip())
                     acceleration = float(payload["acceleration"])
-                    angle_deg = float(payload.get("angle_deg", 0.0))
                 except (ValueError, KeyError, UnicodeDecodeError):
                     continue  # malformed line - ignore, keep the last good reading
                 self._latest_acceleration = min(1.0, max(0.0, acceleration))
-                self._latest_angle_deg = angle_deg % 360.0  # circular, not clamped - wraps rather than pinning at an edge
                 self._latest_at = time.monotonic()
         except Exception as exc:
             self._mark_failed(exc)
@@ -111,18 +111,16 @@ class AccelStickSensor(Sensor):
             return _mock_reading()
 
         if time.monotonic() - self._latest_at > STALE_AFTER_SECONDS:
-            return {"acceleration": 0.0, "angle_deg": 0.0}  # stick connected but quiet - not stale-mocked, genuinely idle
+            return {"acceleration": 0.0}  # stick connected but quiet - not stale-mocked, genuinely idle
 
         self._mark_ok()
-        return {"acceleration": self._latest_acceleration, "angle_deg": self._latest_angle_deg}
+        return {"acceleration": self._latest_acceleration}
 
 
 def _mock_reading() -> dict:
     """Small idle jitter, punctuated by occasional simulated "shake" bursts,
     so the mock exercises the motion-burst tracker the same way a real
-    handheld stick being picked up and shaken would. angle_deg is only
-    ever non-zero during a simulated burst - a real idle stick isn't
-    leaning any particular way, so there's nothing to fake between bursts."""
+    handheld stick being picked up and shaken would."""
     if random.random() < 0.02:
-        return {"acceleration": random.uniform(0.3, 1.0), "angle_deg": random.uniform(0.0, 360.0)}
-    return {"acceleration": random.uniform(0.0, 0.05), "angle_deg": 0.0}
+        return {"acceleration": random.uniform(0.3, 1.0)}
+    return {"acceleration": random.uniform(0.0, 0.05)}

@@ -16,8 +16,8 @@ leds:
   # the browser's pixel map + sketch-canvas sampling. Doesn't map to one
   # physical chain anymore - see "strips" below for the real per-chain
   # hardware config. Keep this equal to the sum of every led zone's
-  # output.pixels: heart_rate 60 (1m strip) + accelerometer 94 (4 arms,
-  # 36+20+16+22 - see TriArmGlideEffect.ARM_LENGTHS). temp_humidity is a DMX
+  # output.pixels: heart_rate 60 (1m strip) + accelerometer 94 (5 arm
+  # segments, 19+17+20+16+22 - see ShakeFireworkEffect.ARM_LENGTHS). temp_humidity is a DMX
   # bar, not counted here.
   num_pixels: 154
   layout: strip   # strip|grid|ring — only "strip" is implemented so far (see web/pixelMap.js)
@@ -65,7 +65,7 @@ leds:
   # reactive_glow all take `intensity`; temp_humidity_bar takes
   # `temperature`+`humidity`+`condition`+`activated`+`history` (the last two
   # gate its periodic past-24h replay; `history` is unrescaled - see its
-  # `raw: true` source below); tri_arm_glide takes `intensity`+`angle`;
+  # `raw: true` source below); shake_firework takes just `intensity`;
   # audio_reactive_wave takes `loudness`+`motion`+`env_brightness`+`ripple`;
   # heart_rate_check_in takes `intensity`+`bpm`, same as pulse. See
   # src/output/effects/registry.py's own docstring for the full breakdown of
@@ -101,7 +101,7 @@ leds:
   #     flag - don't assume it from a spec sheet.
   zones:
     - name: ambient
-      effect: audio_reactive_wave   # organic_wave | organic_comet | organic_twinkle | pulse | temp_humidity_bar | reactive_glow | tri_arm_glide | audio_reactive_wave | heart_rate_check_in
+      effect: audio_reactive_wave   # organic_wave | organic_comet | organic_twinkle | pulse | temp_humidity_bar | reactive_glow | shake_firework | audio_reactive_wave | heart_rate_check_in
       palette: winter            # any key in colour_palette.PALETTES / palettes.json
       source:
         loudness: sensors.loudness                                # picks position in the palette gradient - see AudioReactiveWaveEffect's docstring
@@ -143,18 +143,17 @@ leds:
         bpm: {path: heart_rate.bpm, min: 40, max: 180}   # must match HeartRateEffect.BPM_RANGE
       output: {type: led, strip: heart_rate_strip, pixels: 60}   # 1m strip, confirmed 2026-08-07
     - name: accelerometer
-      effect: tri_arm_glide   # swing glides from hub to tip on whichever arm(s) the angle points toward - see TriArmGlideEffect's docstring
+      effect: shake_firework   # vigorous shake fires every arm at once from the hub, no direction involved - see ShakeFireworkEffect's docstring (replaced tri_arm_glide 2026-08-19)
       palette: autumn
       source:
         intensity: sensors.acceleration                              # raw shake magnitude, 0..1
-        angle: {path: sensors.angle_deg, min: 0, max: 360}            # swing angle -> 0..1
       # On its own independent chain (accelerometer_strip, SPI1) - NOT
-      # data-connected to heart_rate. 94 = 36+20+16+22, confirmed
-      # 2026-08-10 post-soldering: 4 arms radiating from a shared hub
-      # (design changed from the original 3-arm idea), unequal lengths,
-      # angles 20/45/90/135 (approximate, arm 3 straight up), arms 2+4
-      # wired tip-to-hub - see TriArmGlideEffect.ARM_LENGTHS/
-      # ARM_ANGLES_DEG/ARM_REVERSED.
+      # data-connected to heart_rate. 94 = 19+17+20+16+22: physically the
+      # same 4 arms confirmed 2026-08-10 post-soldering (36/20/16/22,
+      # radiating from a shared hub), with arm 1 (36px) now treated as two
+      # wiring segments (19+17, confirmed 2026-08-19) since it doesn't run
+      # hub-to-tip for its whole length - see
+      # ShakeFireworkEffect.ARM_LENGTHS/ARM_REVERSED.
       output: {type: led, strip: accelerometer_strip, pixels: 94}
 
 # Interface-level DMX512 settings - which zones actually send to it, and
