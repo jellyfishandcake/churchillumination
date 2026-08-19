@@ -19,6 +19,19 @@ const uploadButton = document.getElementById("upload-button");
 const jobStatusEl = document.getElementById("job-status");
 const photoPreview = document.getElementById("photo-preview");
 const photoPreviewImg = document.getElementById("photo-preview-img");
+const resetButton = document.getElementById("reset-button");
+const presetButtons = document.querySelectorAll(".preset-button");
+
+// Presets are checked-in files (web/presets/*.jpg, see server.py's
+// PRESET_BACKDROPS) that may not have been added to the server yet - a
+// missing file 404s the thumbnail <img> itself. Disable that specific
+// button rather than leaving a broken-image icon someone could still
+// click (server.py would reject it anyway, but this fails visibly and
+// earlier, right where you can see the thumbnail didn't load).
+presetButtons.forEach((button) => {
+  const img = button.querySelector("img");
+  img.addEventListener("error", () => { button.disabled = true; });
+});
 
 // Bigger than contribute.js's MAX_DIMENSION (800) - that page only needs
 // enough pixels to extract a colour palette from, this one is the actual
@@ -52,29 +65,68 @@ photoInput.addEventListener("change", () => {
 });
 
 let lastKnownVersion = 0;
-let awaitingVersion = null; // set while this tab's own upload is in flight
+// All set together while any one action (upload/preset/reset) is in
+// flight from this tab. Upload/preset both increment the version by
+// exactly 1 (see server.py) - awaitingVersion is that target, satisfied
+// by version reaching *at least* that (>=, not ===: a second person's
+// upload landing in between could push the version past what this tab
+// specifically expected, and this tab's own request still succeeded
+// either way). Reset is different: it always sets version to exactly 0,
+// the one value ">= target" can't express (0 >= 0 is trivially true
+// before the reset has even happened) - awaitingReset checks for that
+// action separately instead. busyButton is whichever button triggered
+// the in-flight action, so it (and only it) gets re-enabled once the
+// ack/version lands - the other two stay clickable throughout, since they
+// don't conflict with an in-flight request the way clicking the SAME
+// action twice would.
+let awaitingVersion = null;
+let awaitingReset = false;
+let busyButton = null;
+let busyLabel = "";
+
+function finishBusy(success, message) {
+  if (busyButton) busyButton.disabled = false;
+  busyButton = null;
+  awaitingVersion = null;
+  awaitingReset = false;
+  jobStatusEl.className = success ? "success" : "error";
+  jobStatusEl.textContent = message;
+}
+
+function startAction(button, label, action, payload) {
+  busyButton = button;
+  busyLabel = label;
+  button.disabled = true;
+  jobStatusEl.className = "";
+  jobStatusEl.textContent = `${label}…`;
+  if (action === "reset_shadow_backdrop") {
+    awaitingReset = true;
+  } else {
+    awaitingVersion = lastKnownVersion + 1;
+  }
+  wsHandle.send({ control: { action, ...payload } });
+}
 
 const wsHandle = window.connectWS((data) => {
-  // Rejections (bad/oversized/corrupted image) never bump shadow_backdrop's
-  // version, so without this the button-disabled "Uploading…" state used to
-  // just hang forever with no explanation - see server.py's set_shadow_backdrop.
+  // Rejections (bad/oversized/corrupted image, unknown/missing preset)
+  // never bump shadow_backdrop's version, so without this the button-
+  // disabled "…ing" state used to just hang forever with no explanation -
+  // see server.py's set_shadow_backdrop/set_shadow_backdrop_preset/
+  // reset_shadow_backdrop.
   const ack = data.control_ack;
-  if (ack && ack.action === "set_shadow_backdrop" && !ack.ok) {
-    awaitingVersion = null;
-    uploadButton.disabled = false;
-    jobStatusEl.className = "error";
-    jobStatusEl.textContent = ack.error || "Upload failed.";
+  const knownActions = ["set_shadow_backdrop", "set_shadow_backdrop_preset", "reset_shadow_backdrop"];
+  if (ack && knownActions.includes(ack.action) && !ack.ok) {
+    finishBusy(false, ack.error || `${busyLabel || "Action"} failed.`);
     return;
   }
 
   const backdrop = data.shadow_backdrop;
   if (!backdrop) return;
   lastKnownVersion = backdrop.version;
-  if (awaitingVersion !== null && backdrop.version >= awaitingVersion) {
-    awaitingVersion = null;
-    uploadButton.disabled = false;
-    jobStatusEl.className = "success";
-    jobStatusEl.textContent = "Backdrop updated - check the projector display.";
+  if (awaitingReset && backdrop.version === 0) {
+    finishBusy(true, "Backdrop reset to default.");
+  } else if (awaitingVersion !== null && backdrop.version >= awaitingVersion) {
+    finishBusy(true, "Backdrop updated - check the projector display.");
   }
 }, status);
 
@@ -84,16 +136,15 @@ uploadButton.addEventListener("click", () => {
     jobStatusEl.textContent = "Choose a photo first.";
     return;
   }
+  startAction(uploadButton, "Uploading", "set_shadow_backdrop", { image_data_url: photoDataUrl });
+});
 
-  uploadButton.disabled = true;
-  jobStatusEl.className = "";
-  jobStatusEl.textContent = "Uploading…";
-  awaitingVersion = lastKnownVersion + 1;
-
-  wsHandle.send({
-    control: {
-      action: "set_shadow_backdrop",
-      image_data_url: photoDataUrl,
-    },
+presetButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    startAction(button, "Applying preset", "set_shadow_backdrop_preset", { preset: button.dataset.preset });
   });
+});
+
+resetButton.addEventListener("click", () => {
+  startAction(resetButton, "Resetting", "reset_shadow_backdrop", {});
 });

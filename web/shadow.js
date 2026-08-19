@@ -59,11 +59,23 @@ let loadedBackdropVersion = null;
 
 function maybeLoadBackdrop(version) {
   // ?image= always wins, and once set there's no live backdrop to swap to -
-  // don't fight a manual override with the broadcast. version 0 means
-  // nobody's uploaded a backdrop yet (server.py's initial state) - nothing
-  // to fetch, stay on the plain dark fallback.
-  if (imageUrlOverride || version === loadedBackdropVersion || version === 0) return;
+  // don't fight a manual override with the broadcast.
+  if (imageUrlOverride || version === loadedBackdropVersion) return;
   loadedBackdropVersion = version;
+
+  if (version === 0) {
+    // version 0 means "no active backdrop" - either nobody's ever uploaded
+    // one (server.py's initial state), or backdrop.html's reset button was
+    // just used. Only the second case needs anything done here: clear
+    // whatever image `bg` currently holds so drawBackground's fallback
+    // check (!bg.complete || naturalWidth===0) sees an empty image and
+    // falls back to the plain cream backdrop again - without this,
+    // resetting would bump the broadcast back to 0 but `bg` would just
+    // keep showing the old photo forever, since nothing else ever clears
+    // its src.
+    bg.removeAttribute("src");
+    return;
+  }
   bg.src = `/uploads/shadow_backdrop.jpg?v=${version}`; // cache-bust: same path, new query string forces a re-fetch
 }
 

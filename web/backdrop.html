@@ -11,6 +11,11 @@
     #job-status.success { color: var(--success); }
     #photo-preview { margin-top: 0.75rem; border-radius: 8px; overflow: hidden; background: #e2e2e2; display: none; }
     #photo-preview img { display: block; width: 100%; }
+    #preset-grid { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 0.75rem; }
+    #preset-grid button { padding: 0; border: 2px solid transparent; border-radius: 6px; background: none; cursor: pointer; line-height: 0; }
+    #preset-grid button:hover { border-color: var(--accent); }
+    #preset-grid button:disabled { cursor: not-allowed; opacity: 0.4; }
+    #preset-grid img { width: 96px; height: 72px; object-fit: cover; border-radius: 4px; display: block; background: #e2e2e2; }
   </style>
 </head>
 <body>
@@ -34,6 +39,22 @@
       <button id="upload-button">Set as backdrop</button>
     </div>
     <div id="job-status"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Or choose a college photo</h2>
+    <p style="color: var(--muted); font-size: 0.85rem;">Pick one of these instead of uploading your own.</p>
+    <div id="preset-grid">
+      <button type="button" class="preset-button" data-preset="college_1"><img src="/presets/college_1.jpg" alt="Preset backdrop 1"></button>
+      <button type="button" class="preset-button" data-preset="college_2"><img src="/presets/college_2.jpg" alt="Preset backdrop 2"></button>
+      <button type="button" class="preset-button" data-preset="college_3"><img src="/presets/college_3.jpg" alt="Preset backdrop 3"></button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Reset</h2>
+    <p style="color: var(--muted); font-size: 0.85rem;">Clears the backdrop back to the plain default background.</p>
+    <button id="reset-button">Reset to default</button>
   </div>
 
   <div id="back-link"><a href="/index.html">← Back to dashboard</a></div>

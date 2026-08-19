@@ -403,6 +403,51 @@ async def _handle_control(websocket, payload: dict) -> None:
         print("[server] saved new shadow backdrop")
         await websocket.send(json.dumps({"control_ack": {"action": "set_shadow_backdrop", "ok": True}}))
 
+    elif action == "set_shadow_backdrop_preset":
+        # Same destination as a real upload (UPLOADS_DIR/shadow_backdrop.jpg)
+        # - a preset is really just "server-supplied bytes instead of
+        # visitor-supplied bytes" through the same set-backdrop pipeline, so
+        # shadow.js/serve_static need no changes at all for this to work.
+        # PRESET_BACKDROPS is a fixed allowlist (not an arbitrary filename
+        # from the client) specifically so this can't be used to read any
+        # file on disk other than the handful of backdrops actually meant
+        # to be offered here.
+        preset = payload.get("preset")
+        if preset not in PRESET_BACKDROPS:
+            print(f"[server] rejected set_shadow_backdrop_preset: unknown preset {preset!r}")
+            await websocket.send(json.dumps({"control_ack": {
+                "action": "set_shadow_backdrop_preset", "ok": False,
+                "error": "That preset isn't available.",
+            }}))
+            return
+
+        preset_path = PRESETS_DIR / PRESET_BACKDROPS[preset]
+        if not preset_path.is_file():
+            print(f"[server] rejected set_shadow_backdrop_preset: {preset_path} missing on disk")
+            await websocket.send(json.dumps({"control_ack": {
+                "action": "set_shadow_backdrop_preset", "ok": False,
+                "error": "That preset's image file hasn't been added to the server yet.",
+            }}))
+            return
+
+        UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+        (UPLOADS_DIR / "shadow_backdrop.jpg").write_bytes(preset_path.read_bytes())
+        latest["shadow_backdrop"] = {"version": latest["shadow_backdrop"]["version"] + 1}
+        print(f"[server] set shadow backdrop to preset {preset!r}")
+        await websocket.send(json.dumps({"control_ack": {"action": "set_shadow_backdrop_preset", "ok": True}}))
+
+    elif action == "reset_shadow_backdrop":
+        # Back to "nobody's set a backdrop" (version 0 - see shadow.js's
+        # maybeLoadBackdrop, which treats 0 as "show the plain cream
+        # fallback, don't fetch anything"). Deletes the uploaded file too,
+        # not just the in-memory version counter - without this, a server
+        # restart's own "shadow_backdrop.jpg survives on disk, so bump back
+        # to version 1" startup check (below) would silently un-reset it.
+        (UPLOADS_DIR / "shadow_backdrop.jpg").unlink(missing_ok=True)
+        latest["shadow_backdrop"] = {"version": 0}
+        print("[server] reset shadow backdrop to default")
+        await websocket.send(json.dumps({"control_ack": {"action": "reset_shadow_backdrop", "ok": True}}))
+
     else:
         print(f"[server] ignoring unknown control action: {action!r}")
  
@@ -422,6 +467,25 @@ SKETCHES_DIR = WEB_DIR / "sketches"
 # WEB_DIR so serve_static's path-escape check covers it for free" reasoning
 # as SKETCHES_DIR.
 UPLOADS_DIR = WEB_DIR / "uploads"
+
+# A handful of ready-made shadow backdrops (see set_shadow_backdrop_preset
+# above) - checked into the repo under web/presets/ (unlike UPLOADS_DIR,
+# which is visitor-generated and gitignored), so they're always available
+# regardless of what anyone's uploaded. PRESET_BACKDROPS is a fixed id ->
+# filename allowlist, not a directory listing, so a client can only ever
+# select one of these specific files, never an arbitrary path.
+#
+# Placeholder filenames only - nobody's added real photos yet. Drop actual
+# .jpg files at these exact paths (web/presets/college_1.jpg etc.) and the
+# preset picker on backdrop.html starts working with no code changes; until
+# then, selecting one just returns a clean "not available yet" error rather
+# than crashing (see the is_file() check above).
+PRESETS_DIR = WEB_DIR / "presets"
+PRESET_BACKDROPS = {
+    "college_1": "college_1.jpg",
+    "college_2": "college_2.jpg",
+    "college_3": "college_3.jpg",
+}
 
 # latest["shadow_backdrop"]["version"] starts at 0 (see its definition near
 # the top of this file) meaning "nobody's uploaded a backdrop yet" -
