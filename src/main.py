@@ -1,18 +1,40 @@
 """
-The orchestrator. Runs four things concurrently:
+The orchestrator. Runs, in parallel:
 
-  1. Sensor loop        — reads sensors, computes state, updates the shared
-                          `latest` dict (which the server reads).
-  2. LED output loop    — steps the selected system effect, sends it to the
-                          LED strip (or prints, for now).
-  3. Palette build loop — processes contribute.html photo-to-palette
-                          requests one at a time, off the event loop.
-  4. WebSocket server   — publishes state to the browser dashboard, receives
-                          canvas colours back.
+  1. Sensor producer threads — one per sensor (I2C-bus sensors grouped onto
+                          one shared thread, see src/sensing/producers.py) -
+                          each blocks on its own hardware at its own natural
+                          rate and writes its latest reading into a shared
+                          dict. Never touches server.latest directly.
+  2. Render loop         — the ONE loop that's protected: plain synchronous
+                          code on the main thread, never awaits, never
+                          blocks on I/O it doesn't control. Each tick, reads
+                          a snapshot of the sensor producers' shared dict,
+                          does the (cheap) smoothing/state-inference work
+                          sensor_loop used to do, then steps every zone's
+                          effect and writes the result to real hardware
+                          (LED strips over SPI, DMX over serial).
+  3. Background asyncio thread — the websocket server (dashboard push +
+                          admin controls) and the palette-build job queue
+                          both need asyncio (the `websockets` library), so
+                          they share one event loop together, running on a
+                          single background thread instead of on the main
+                          thread. Neither one is on the render loop's
+                          protected path.
 
-All four share one asyncio event loop. Nothing blocks the others.
+Every thread/loop talks to the others ONLY through a small number of shared
+dicts (server.latest, server.runtime_settings, producers.raw) - one writer
+per key, no queues, no locks. See src/sensing/producers.py's own docstring
+for why no lock is needed there, and server.py's module docstring for the
+same reasoning on server.latest/runtime_settings. This replaces an earlier
+all-asyncio design (every one of the above sharing a single asyncio event
+loop) - see git history/CLAUDE.md for why: a blocking call ANYWHERE in that
+design (a slow sensor read, a debug print(), a slow websocket send) stalled
+literally everything at once, including LED output, which is the one thing
+in this whole system that most needs to stay smooth.
 """
 import asyncio
+import concurrent.futures
 import pathlib
 import threading
 import time
@@ -30,6 +52,7 @@ from src.sensing.heart_rate import HeartRateSensor
 from src.sensing.accel_stick import AccelStickSensor
 from src.sensing.nodes import NodeSensor
 from src.sensing.weather import WeatherSensor
+from src.sensing import producers
 from src.intelligence import rules
 from src.intelligence.activation import ActivationTracker
 from src.intelligence.audio_moments import AudioMomentTracker
@@ -42,13 +65,6 @@ from src.output.effects.colour_palette import PALETTES
 from src.output.effects.led_effects import apply_gamma
 from src.net import server
 
-# Sensor config-block names (see build_sensors below) that talk to the Pi's
-# I2C bus: motion.py's MLX90640, multisensor.py's BME280+LTR559,
-# heart_rate.py's MAX30102 - see sensor_loop's _read for why these three, and
-# only these three, need to be serialised against each other.
-_I2C_SENSOR_NAMES = frozenset({"motion", "multisensor", "heart_rate"})
-_I2C_BUS_LOCK = threading.Lock()
-
 
 def build_sensors(config: dict) -> dict:
     """Build the sensor dict, keyed by the same name used in config's
@@ -60,8 +76,9 @@ def build_sensors(config: dict) -> dict:
     Only sensors starting enabled are constructed: AudioSensor/PIRSensor
     bind real hardware (a mic stream, a GPIO pin) in __init__, not in
     .read(), so a sensor disabled here can't be turned on at runtime
-    without a restart — sensor_loop's per-tick enabled check only supports
-    live-disabling (and re-enabling) a sensor that started enabled."""
+    without a restart — each producer's own per-tick enabled check (see
+    producers.py) only supports live-disabling (and re-enabling) a sensor
+    that started enabled."""
     sensors_config = config["sensors"]
     sensors = {}
 
@@ -119,6 +136,16 @@ SMOOTHING_ALPHA = 0.15
 # hand.
 MOTION_BURST_THRESHOLD = 0.15
 
+# The render loop's target tick period - both the old sensor_loop and
+# output_loop independently targeted 20Hz; now there's one fused loop, so
+# there's one constant. Scheduled against an absolute clock (see
+# render_loop's own pacing step at the end of its while loop), not a flat
+# post-work sleep - a flat sleep makes the real tick period drift by however
+# long that tick's own work took, which reads as uneven micro-stutter even
+# though led_effects.py's dt-based scaling keeps the average animation
+# speed correct regardless.
+RENDER_TICK_SECONDS = 0.05
+
 
 def _smooth_readings(previous: dict, current: dict, alpha: float) -> dict:
     """EMA-smooth each numeric reading against its previous value. Non-numeric
@@ -132,168 +159,6 @@ def _smooth_readings(previous: dict, current: dict, alpha: float) -> dict:
         else:
             smoothed[key] = value
     return smoothed
-
-
-async def sensor_loop(sensors, infer, activation_tracker, hr_tracker, motion_tracker, audio_moment_tracker):
-    """Read sensors, smooth them, compute state, publish to shared dict. 20 Hz.
-
-    Each sensor now handles its own hardware failures internally — it falls
-    back to its own mock reading and records .healthy/.last_error on itself
-    (see base.py's _mark_failed/_mark_ok). So the try/except below is just a
-    last-resort safety net for a bug even inside that fallback path, not the
-    primary way failures get handled: without it, one such bug would still
-    crash the whole asyncio.gather() in main(), taking the LED loop and the
-    WebSocket server down along with the sensor that actually failed.
-
-    activation_tracker's timeout, the smoothing alpha, and an optional
-    state override are all read live from server.runtime_settings each
-    tick, so the admin terminal's controls take effect without a restart.
-
-    hr_tracker/motion_tracker are separate, isolated ActivationTracker
-    instances (heart-rate contact, handheld-stick shake) - deliberately not
-    folded into activation_tracker's ambient "activated" or into
-    infer_state, since these are direct per-sensor interaction signals for
-    their own dedicated LED regions, not ambient presence. audio_moment_tracker
-    is the same idea for a laughter/applause/cheering/music moment (see
-    intelligence/audio_moments.py) - also fed raw, not smoothed, so the
-    ambient zone's ripple overlay reacts the instant a scene's detected.
-    """
-    smoothed = {}
-    while True:
-        activation_tracker.timeout = server.runtime_settings["activation_timeout_seconds"]
-        alpha = server.runtime_settings["smoothing_alpha"]
-
-        # Each sensor's read() is plain blocking hardware I/O (camera frame
-        # grab, I2C, serial) - calling them one after another with no
-        # await, as this used to, stalls this *entire* process for the sum
-        # of every sensor's read time, since asyncio is single-threaded and
-        # output_loop shares this same thread. Measured 2026-08-18: 2.1Hz
-        # actual output_loop rate against its assumed 20Hz - a ~9.5x
-        # slowdown that made every TICK_SECONDS-based effect (led_effects.py)
-        # run proportionally slower than intended with no error, just
-        # animations that "feel" wrong for no visible reason (a 70bpm heart
-        # pulse stretched to ~8s). run_in_executor moves each read() onto a
-        # background thread, and gather runs them concurrently - sensor_loop's
-        # own iteration time becomes roughly the slowest single sensor's read
-        # time instead of the sum of all of them, and critically frees this
-        # thread to keep servicing output_loop/the websocket server while
-        # those reads are in flight. return_exceptions=True preserves the
-        # previous per-sensor try/except - one sensor's failure still can't
-        # take down the others.
-        #
-        # _I2C_BUS_LOCK (below) serialises just motion/multisensor/heart_rate
-        # against EACH OTHER, since all three talk to the Pi's I2C bus - found
-        # 2026-08-18, one session after the concurrency change above: genuinely
-        # concurrent reads let one sensor's multi-byte register/frame read
-        # interleave with another's mid-transaction (the kernel's i2c-dev
-        # driver serialises one physical bus transfer at a time, but not a
-        # whole logical read spanning several transfers), corrupting readings
-        # - which then fed garbled data into every effect reading from them
-        # (weather's temperature, ambient's lux/motion, heart_rate's bpm),
-        # showing up as erratic-looking LEDs across multiple zones at once,
-        # reported back as "all the LEDs behaving strangely". Non-I2C sensors
-        # (audio, accel_stick's serial, nodes' MQTT, weather's cached
-        # background thread) still run fully concurrently with everything.
-        loop = asyncio.get_running_loop()
-        enabled_sensors = [
-            (name, s) for name, s in sensors.items()
-            if server.runtime_settings["sensors_enabled"].get(name, True)
-        ]
-
-        def _read(name, s):
-            if name in _I2C_SENSOR_NAMES:
-                with _I2C_BUS_LOCK:
-                    return s.read()
-            return s.read()
-
-        results = await asyncio.gather(
-            *(loop.run_in_executor(None, _read, name, s) for name, s in enabled_sensors),
-            return_exceptions=True,
-        )
-        raw = {}
-        for (_, s), result in zip(enabled_sensors, results):
-            if isinstance(result, Exception):
-                print(f"[sensor_loop] {type(s).__name__}.read() raised even past its own fallback — skipping this tick: {result}")
-            else:
-                raw.update(result)
-
-        # "activated" is derived from raw (not smoothed) presence, does not benefit
-        # from smoothing. Presence at any of the 3 PIRs (central, via pir.py, plus
-        # the 2 node-mounted ones nested under raw["nodes"][node_id]["presence"])
-        # keeps the installation activated, not just the central one.
-        central_presence = raw.get("presence", 0.0) > 0.5
-        node_presence = any(
-            node_reading.get("presence", 0.0) > 0.5
-            for node_reading in raw.get("nodes", {}).values()
-        )
-        presence = central_presence or node_presence
-        now = time.time()
-        raw["activated"] = activation_tracker.update(presence, now)
-
-        # Isolated interaction signals - fed from raw, same reasoning as
-        # "activated" above: a debounce needs the real, un-smoothed edge to
-        # trigger on, not an EMA-lagged one.
-        hr_engaged = hr_tracker.update(raw.get("pulse_detected", False), now)
-        motion_burst = motion_tracker.update(raw.get("acceleration", 0.0) > MOTION_BURST_THRESHOLD, now)
-        audio_ripple = audio_moment_tracker.update(raw.get("audio_scene"), raw.get("audio_scene_score", 0.0), now)
-
-        smoothed = _smooth_readings(smoothed, raw, alpha)
-
-        # How far indoor conditions have drifted from outdoor - magnitude
-        # only (not signed), since _resolve_one_source's {path, min, max}
-        # rescale always clamps to unsigned 0..1 (see main.py's own
-        # docstring on it). Only set when both readings are actually
-        # present (weather.py's WeatherSensor always returns something,
-        # real or mocked, once enabled - so this is really just "weather
-        # sensor enabled at all") - a zone referencing this path when it's
-        # absent just resolves to 0.0 via the same fail-soft path every
-        # other missing source already takes, so this is a no-op rather
-        # than an error if weather's disabled.
-        if "temperature" in smoothed and "outdoor_temperature" in smoothed:
-            smoothed["indoor_outdoor_temp_diff"] = abs(smoothed["temperature"] - smoothed["outdoor_temperature"])
-
-        state = infer(smoothed)
-        override = server.runtime_settings["state_override"]
-        if override is not None:
-            state.mood = override["mood"]
-            state.activity_level = override["activity_level"]
-
-        # Update the shared dict the server reads from
-        server.latest["state"] = state.to_dict()
-        # Per-sensor health, so a future error/status display can show which
-        # sensors are currently running on their mock due to a real failure
-        # (as opposed to simply not having that hardware configured at all).
-        server.latest["sensor_health"] = {
-            name: {"healthy": s.healthy, "last_error": s.last_error} for name, s in sensors.items()
-        }
-        # bpm smoothed for a steadier bulb pulse rate; pulse_detected itself
-        # stays raw going into hr_tracker above, same as PIR presence does.
-        server.latest["heart_rate"] = {"bpm": smoothed.get("heart_rate"), "engaged": hr_engaged}
-        # acceleration_raw added 2026-08-19: the accelerometer zone's
-        # ShakeFireworkEffect is deliberately an INSTANT trigger (see its
-        # own docstring - no buffering/averaging, fires the tick intensity
-        # crosses threshold) but was reading sensors.acceleration
-        # (smoothed) instead of this raw signal - modelling SMOOTHING_ALPHA
-        # (0.15) against a real shake, it takes ~5 consecutive ticks
-        # (~250ms) of a sustained max reading before the smoothed value
-        # even crosses 0.5, which a real quick shake often doesn't sustain
-        # for at all, even though the raw reading genuinely spikes to 1.0
-        # - the effect's own "instant, no averaging" design was being
-        # silently defeated by smoothing one layer up that it never asked
-        # for. Same "raw, not smoothed, so it reacts instantly" reasoning
-        # as motion_burst/audio_ripple below, not a new pattern.
-        server.latest["interactions"] = {
-            "motion_burst": motion_burst, "audio_ripple": audio_ripple,
-            "acceleration_raw": raw.get("acceleration", 0.0),
-        }
-        # Every sensor's smoothed reading, flat (see e.g. pir.py's docstring
-        # on why sensors share one flat namespace, distinct keys). Lets a
-        # zone's `source` reference any raw reading (e.g.
-        # "sensors.temperature") without main.py needing to hand-curate a
-        # publish point per field the way heart_rate/interactions above do.
-        server.latest["sensors"] = smoothed
-
-        await asyncio.sleep(0.05)  # 20 Hz
 
 
 def _resolve_one_source(latest: dict, spec):
@@ -349,7 +214,7 @@ def _resolve_sources(latest: dict, source_map: dict) -> dict:
     """{name: 0..1 value, ...} for every named source a zone declares -
     see _resolve_one_source (a `raw: true` source is the one exception,
     passed through unrescaled - still keyed the same way). Keys must match
-    the zone's chosen effect's step() parameter names (led_loop calls
+    the zone's chosen effect's step() parameter names (render_loop calls
     effect.step(**sources))."""
     return {name: _resolve_one_source(latest, spec) for name, spec in source_map.items()}
 
@@ -372,10 +237,10 @@ def _led_zone_pixel_ranges(zones_config: list, strips: dict) -> dict:
     for zone in led_zones:
         strip_name = zone["output"].get("strip")
         if strip_name is None:
-            print(f"[output_loop] zone {zone['name']!r} has no output.strip set (old single-strip config?) - dropped, add a strip: <name> matching one of leds.strips to config.yaml")
+            print(f"[render_loop] zone {zone['name']!r} has no output.strip set (old single-strip config?) - dropped, add a strip: <name> matching one of leds.strips to config.yaml")
             continue
         if strip_name not in strips:
-            print(f"[output_loop] zone {zone['name']!r} references unknown strip {strip_name!r} - dropped, check leds.strips/leds.zones agree in config.yaml")
+            print(f"[render_loop] zone {zone['name']!r} references unknown strip {strip_name!r} - dropped, check leds.strips/leds.zones agree in config.yaml")
             continue
         zones_by_strip.setdefault(strip_name, []).append(zone)
 
@@ -389,7 +254,7 @@ def _led_zone_pixel_ranges(zones_config: list, strips: dict) -> dict:
             ranges[zone["name"]] = (strip_name, start, end)
             start = end
         if start != num_pixels:
-            print(f"[output_loop] strip {strip_name!r}: led-zone pixel counts sum to {start}, not num_pixels={num_pixels} — last zone on this strip padded/clamped to fit")
+            print(f"[render_loop] strip {strip_name!r}: led-zone pixel counts sum to {start}, not num_pixels={num_pixels} — last zone on this strip padded/clamped to fit")
     return ranges
 
 
@@ -434,52 +299,32 @@ def _dmx_zone_pixel_count(output: dict) -> int:
     return output.get("pixels", 1)
 
 
-async def output_loop(strips, dmx, zones_config, brightness: float = 1.0):
-    """Step every zone's selected effect once, then route each zone's frame
-    to whichever hardware its own `output` config points at - an `led` zone
-    (output: {type: led, strip: name, pixels: N}) contributes a slice of one
-    of the independent APA102 chains in `strips` ({strip_name: LEDStrip} -
-    heart_rate and accelerometer are NOT data-connected to each other, two
-    separate chains, not one continuous strip spliced together - see
-    leds.strips in config.py/config.yaml); a `dmx` zone (output: {type: dmx,
-    start_address, channels, pixels: N}) is mapped into the shared
-    512-channel DMX universe instead, as N consecutive groups of `channels`
-    starting at start_address (N defaults to 1 - one whole-bar point of
-    colour - for fixtures/modes with no independent segments; set pixels to
-    match a confirmed segment count for one that has them, see
-    _dmx_zone_pixel_count). Replaces the old led_loop/dmx_loop split now
-    that a zone's hardware target is just a config field on the same zone,
-    not a reason to duplicate the whole effect-stepping loop - see
-    CLAUDE.md/the conversation that led to this for why they used to be
-    separate. 20 Hz.
+def render_loop(sensors, infer, activation_tracker, hr_tracker, motion_tracker, audio_moment_tracker,
+                 strips, dmx, zones_config, dmx_executor, brightness: float = 1.0) -> None:
+    """The ONE protected loop - plain synchronous code on the main thread,
+    never awaits, never calls anything that blocks on I/O it doesn't
+    control. Runs forever at RENDER_TICK_SECONDS until KeyboardInterrupt.
 
-    Every zone still runs its own effect+palette
-    (server.runtime_settings["zones"][name], live-swappable from admin.html's
-    Zones tab for both `led` and `dmx` zones - see the output.type=="dmx"
-    branch below for how a dmx zone's frame separately reaches
-    server.latest["dmx_frame"] for its own dashboard swatch, since it has no
-    slot in led_frame) at one or more named intensities pulled from its own
-    sensor signals (zone["source"],
-    resolved each tick by _resolve_sources and passed to effect.step() as
-    **kwargs). Per-zone effect instances are only rebuilt when that zone's
-    (effect, palette) pair actually changes - effect objects hold animation
-    state (self.t, self.trail, ...) that must survive across ticks, so
-    rebuilding every tick would e.g. stop a comet's trail from ever
-    accumulating.
+    Fuses what used to be two separate asyncio coroutines (sensor_loop +
+    output_loop) into one function, in this order, every tick:
 
-    server.latest["led_frame"] stays ONE flat array concatenating every led
-    zone's frame in zones_config order, exactly like when there was only one
-    physical strip - the browser's dashboard (admin.js/app.js) slices it by
-    running zone.pixels offset and has no notion of "strip" at all, so
-    keeping this shape means zero client-side changes were needed for the
-    multi-strip split. The real per-strip hardware writes below are a
-    separate concern, built by re-slicing the same graded pixel data back
-    apart by zone into each strip's own buffer.
+      1. Snapshot producers.raw (see src/sensing/producers.py) - every
+         sensor's latest reading, written by its own dedicated thread. This
+         is the ONLY place render_loop touches sensor data; it never calls
+         .read() on a Sensor itself (that's producers.py's job) and so can
+         never be blocked by one.
+      2. The same (cheap - confirmed by reading rules.py/activation.py/
+         audio_moments.py, all pure in-memory arithmetic, no I/O) smoothing
+         + state-inference + activation-tracking work sensor_loop used to
+         do, now inline here instead of a separate coroutine.
+      3. Publish the result to server.latest (unchanged shape/keys).
+      4. Step every zone's effect and write the composited frame to real
+         hardware - unchanged from the old output_loop, verbatim.
 
-    The browser's canvas-sampling pipeline (app.js/sketch.js/pixelMap.js,
-    still sending {"pixels": [...]}) keeps running but is intentionally
-    unconsumed here — kept for its own visual/demo value and as groundwork
-    for a future user-sketch-upload feature, not because it's a bug.
+    `sensors` is only used here for reading .healthy/.last_error for the
+    dashboard's sensor-health display (a plain unsynchronized attribute on
+    each Sensor - safe to read cross-thread from whichever producer thread
+    last wrote it, same as today) - never for .read().
     """
     led_ranges = _led_zone_pixel_ranges(zones_config, strips)
 
@@ -503,16 +348,79 @@ async def output_loop(strips, dmx, zones_config, brightness: float = 1.0):
     # Real elapsed time passed into every effect's step() as `dt` (see
     # led_effects.py's ASSUMED_TICK_SECONDS module docstring for why) -
     # measured here, not assumed. Clamped so a single unusually slow tick
-    # (or the very first one, or the process resuming after being paused/
-    # debugged) can't make an effect suddenly jump forward several beats at
-    # once instead of just running a bit fast to catch up - a large enough
-    # cap that it never bites during genuinely normal operation, small
-    # enough that a real stall doesn't turn into a multi-second animation
-    # jump.
+    # (or the very first one) can't make an effect suddenly jump forward
+    # several beats at once instead of just running a bit fast to catch up.
     DT_MAX_SECONDS = 0.5
     _last_tick_time = time.monotonic()
 
+    # EMA-smoothed sensor readings, carried across ticks - local to this
+    # single thread, so (unlike producers.raw) needs no synchronization at
+    # all: nothing else ever reads or writes this dict.
+    smoothed = {}
+
+    # Absolute-clock pacing target (see RENDER_TICK_SECONDS's own comment
+    # on why this replaced a flat post-work sleep).
+    next_tick = time.monotonic()
+
     while True:
+        # --- 1: snapshot every sensor's latest reading ---
+        raw = dict(producers.raw)
+
+        # --- 2: the processing sensor_loop used to do, now inline ---
+        activation_tracker.timeout = server.runtime_settings["activation_timeout_seconds"]
+        alpha = server.runtime_settings["smoothing_alpha"]
+
+        # "activated" is derived from raw (not smoothed) presence, does not
+        # benefit from smoothing. Presence at any of the 3 PIRs (central,
+        # via pir.py, plus the 2 node-mounted ones nested under
+        # raw["nodes"][node_id]["presence"]) keeps the installation
+        # activated, not just the central one.
+        central_presence = raw.get("presence", 0.0) > 0.5
+        node_presence = any(
+            node_reading.get("presence", 0.0) > 0.5
+            for node_reading in raw.get("nodes", {}).values()
+        )
+        presence = central_presence or node_presence
+        wall_now = time.time()
+        raw["activated"] = activation_tracker.update(presence, wall_now)
+
+        # Isolated interaction signals - fed from raw, same reasoning as
+        # "activated" above: a debounce needs the real, un-smoothed edge to
+        # trigger on, not an EMA-lagged one.
+        hr_engaged = hr_tracker.update(raw.get("pulse_detected", False), wall_now)
+        motion_burst = motion_tracker.update(raw.get("acceleration", 0.0) > MOTION_BURST_THRESHOLD, wall_now)
+        audio_ripple = audio_moment_tracker.update(raw.get("audio_scene"), raw.get("audio_scene_score", 0.0), wall_now)
+
+        smoothed = _smooth_readings(smoothed, raw, alpha)
+
+        # How far indoor conditions have drifted from outdoor - magnitude
+        # only (not signed), since _resolve_one_source's {path, min, max}
+        # rescale always clamps to unsigned 0..1. Only set when both
+        # readings are actually present - a zone referencing this path when
+        # it's absent just resolves to 0.0 via the same fail-soft path
+        # every other missing source already takes.
+        if "temperature" in smoothed and "outdoor_temperature" in smoothed:
+            smoothed["indoor_outdoor_temp_diff"] = abs(smoothed["temperature"] - smoothed["outdoor_temperature"])
+
+        state = infer(smoothed)
+        override = server.runtime_settings["state_override"]
+        if override is not None:
+            state.mood = override["mood"]
+            state.activity_level = override["activity_level"]
+
+        # --- 3: publish to server.latest (unchanged shape/keys) ---
+        server.latest["state"] = state.to_dict()
+        server.latest["sensor_health"] = {
+            name: {"healthy": s.healthy, "last_error": s.last_error} for name, s in sensors.items()
+        }
+        server.latest["heart_rate"] = {"bpm": smoothed.get("heart_rate"), "engaged": hr_engaged}
+        server.latest["interactions"] = {
+            "motion_burst": motion_burst, "audio_ripple": audio_ripple,
+            "acceleration_raw": raw.get("acceleration", 0.0),
+        }
+        server.latest["sensors"] = smoothed
+
+        # --- 4: step every zone's effect, write to real hardware ---
         now = time.monotonic()
         dt = min(now - _last_tick_time, DT_MAX_SECONDS)
         _last_tick_time = now
@@ -548,7 +456,7 @@ async def output_loop(strips, dmx, zones_config, brightness: float = 1.0):
                 try:
                     frame = effect.step(dt=dt, **sources)
                 except TypeError as exc:
-                    print(f"[output_loop] zone {name!r}: effect {effect_name!r} doesn't accept sources {list(sources)} — holding last frame until the pick changes ({exc})")
+                    print(f"[render_loop] zone {name!r}: effect {effect_name!r} doesn't accept sources {list(sources)} — holding last frame until the pick changes ({exc})")
                     frame = last_frame
                     broken = True
 
@@ -559,32 +467,7 @@ async def output_loop(strips, dmx, zones_config, brightness: float = 1.0):
             elif output["type"] == "dmx":
                 graded_frame = apply_gamma(frame)
                 if brightness != 1.0:
-                    # Same post-gamma multiplier the led strip gets below -
-                    # previously only applied there, so a dmx zone never got
-                    # any louder no matter how high leds.brightness was set.
-                    # Clips (not rescales) for the same reason as the led
-                    # path: a boosted highlight should flatten toward the
-                    # fixture's actual max, not dim everything else to
-                    # compensate.
                     graded_frame = np.clip(graded_frame.astype(np.float32) * brightness, 0, 255).astype(np.uint8)
-                # Populated unconditionally (not just when dmx_universe is
-                # real) - this is the dashboard's preview of what the zone
-                # WOULD send, so it should reflect the effect running even
-                # before the interface is enabled/wired up. Only the actual
-                # hardware write below is gated on dmx_universe existing.
-                #
-                # Brightness-scaled but deliberately NOT gamma-corrected -
-                # gamma exists to compensate for how a real fixture's
-                # perceived brightness scales non-linearly with its raw
-                # signal (see apply_gamma's docstring). A browser already
-                # applies its own gamma decode when painting an RGB colour
-                # on screen, so broadcasting the same gamma-corrected value
-                # sent to hardware double-applies that curve and crushes
-                # already-dim effect output toward black well before the
-                # real fixture would look anywhere near that dark in
-                # person. graded_frame (gamma-corrected) is still what
-                # actually reaches the universe below - this preview is
-                # display-only.
                 if brightness != 1.0:
                     preview_frame = np.clip(frame.astype(np.float32) * brightness, 0, 255).astype(np.uint8)
                 else:
@@ -592,11 +475,6 @@ async def output_loop(strips, dmx, zones_config, brightness: float = 1.0):
                 dmx_frames[name] = preview_frame
                 if dmx_universe is not None:
                     channels_layout = output["channels"]
-                    # Segment i's channels sit right after segment i-1's, in
-                    # the same order tools/test_dmx.py's --start probing
-                    # confirms for the real fixture (e.g. 3 channels/segment:
-                    # segment 0 = channels start_address..+2, segment 1 =
-                    # the next 3, ...).
                     base = output["start_address"] - 1  # DMX addresses are 1-based; universe list is 0-based
                     for seg, rgb in enumerate(graded_frame):
                         values = _fixture_channel_values(channels_layout, rgb)
@@ -610,31 +488,15 @@ async def output_loop(strips, dmx, zones_config, brightness: float = 1.0):
         full_frame = np.concatenate(ordered_led_frames, axis=0) if ordered_led_frames else np.zeros((0, 3))
         graded = apply_gamma(full_frame)
         if brightness != 1.0:
-            # Applied after gamma, not before - this is the final "how bright
-            # does the strip actually look" scale, not a second gamma pass.
-            # Clips rather than rescales so a boosted highlight can flatten
-            # to solid white instead of the whole frame dimming to compensate.
             graded = np.clip(graded.astype(np.float32) * brightness, 0, 255).astype(np.uint8)
-        hardware_frame = graded.tolist()  # numpy -> plain ints - gamma-corrected, for the real strips only, see led_frame below
+        hardware_frame = graded.tolist()  # numpy -> plain ints - gamma-corrected, for the real strips only
 
-        # Brightness-scaled but NOT gamma-corrected, unlike hardware_frame
-        # above - same "a screen already applies its own gamma decode, so
-        # showing hardware_frame's values on screen double-darkens them"
-        # reasoning as the dmx branch above. This is what actually reaches
-        # server.latest/the dashboard; hardware_frame never does.
         if brightness != 1.0:
             preview = np.clip(full_frame.astype(np.float32) * brightness, 0, 255).astype(np.uint8)
         else:
             preview = full_frame.astype(np.uint8)
         led_frame = preview.tolist()  # dashboard-facing, one flat array same as before the multi-strip split
 
-        # Re-slice hardware_frame (gamma-corrected - real LEDs, unlike the
-        # dashboard, DO need that correction) back apart by zone into each
-        # real physical strip's own buffer (strip-local offsets, from
-        # led_ranges), then send each strip independently - this is the one
-        # place the two-chain hardware split actually shows up; the
-        # dashboard-facing led_frame above stays a single flat array
-        # regardless.
         strip_buffers = {name: [[0, 0, 0]] * strip.num_pixels for name, strip in strips.items()}
         offset = 0
         for name in ordered_led_zone_names:
@@ -642,59 +504,68 @@ async def output_loop(strips, dmx, zones_config, brightness: float = 1.0):
             length = local_end - local_start
             strip_buffers[strip_name][local_start:local_end] = hardware_frame[offset:offset + length]
             offset += length
+
         # DMXInterface.send_channels is a blocking ~1ms break plus the wire
         # time (and often real driver-level latency well beyond that on cheap
         # USB-serial dongles) to write + flush() a full 513-byte frame every
-        # call - confirmed 2026-08-18 as the dominant blocking cost in this
-        # loop, well above either LEDStrip.render_pixels call. Runs on its
-        # own thread so it overlaps with the strip writes below instead of
-        # stalling the whole process for its ~23ms+.
+        # call - the dominant blocking cost in this loop, well above either
+        # LEDStrip.render_pixels call. Submitted to a persistent single-
+        # worker executor (created once in main(), not per-tick) so it
+        # overlaps with the strip writes below instead of stalling this
+        # whole loop for its ~23ms+; a fresh threading.Thread per tick would
+        # work too but costs a real (if small) allocation+OS call 20 times a
+        # second for no benefit over reusing one worker.
         #
         # The two strip writes themselves stay plain and sequential, NOT also
-        # parallelised against each other - a follow-up same day found that
-        # running heart_rate_strip (SPI0) and accelerometer_strip (SPI1)
-        # concurrently made accelerometer_strip glitch badly while DMX (on
-        # entirely separate hardware) stayed fine. SPI1 is the Pi's auxiliary
-        # SPI peripheral (spi-bcm2835aux) - simpler than the main SPI0
-        # controller, no proper DMA support, more sensitive to being driven
-        # at the exact same instant as something else. Each strip write is
-        # only ~2-5ms anyway (60-94 pixels at 1-8MHz), so there was never a
-        # real performance reason to parallelise them - the actual win was
+        # parallelised against each other - running heart_rate_strip (SPI0)
+        # and accelerometer_strip (SPI1) concurrently made accelerometer_strip
+        # glitch badly (SPI1 is the Pi's simpler auxiliary SPI peripheral,
+        # more sensitive to being driven at the exact same instant as
+        # something else) while DMX (on entirely separate hardware) stayed
+        # fine. Each strip write is only ~2-5ms anyway, so there was never a
+        # real performance reason to parallelise them - the actual win is
         # always overlapping the ~23ms DMX write with the cheap strip writes,
         # which this keeps.
-        loop = asyncio.get_running_loop()
-        dmx_task = loop.run_in_executor(None, dmx.send_channels, dmx_universe) if dmx_universe is not None else None
+        dmx_future = dmx_executor.submit(dmx.send_channels, dmx_universe) if dmx_universe is not None else None
 
         for strip_name, strip in strips.items():
             strip.render_pixels(strip_buffers[strip_name])
 
-        if dmx_task is not None:
-            await dmx_task
+        if dmx_future is not None:
+            dmx_future.result()
 
         server.latest["led_frame"] = led_frame
-        # {zone_name: [[r,g,b], ...]} - separate from led_frame (which is one
-        # flat concatenated strip) since dmx zones don't share that strip's
-        # pixel space. admin.js paints each dmx zone's swatch straight from
-        # here instead of slicing led_frame by offset.
         server.latest["dmx_frame"] = {name: frame.tolist() for name, frame in dmx_frames.items()}
 
-        await asyncio.sleep(0.05)  # 20 Hz
+        # --- pacing: sleep against an absolute clock, not a flat post-work
+        # delay (see RENDER_TICK_SECONDS's own comment) ---
+        next_tick += RENDER_TICK_SECONDS
+        sleep_for = next_tick - time.monotonic()
+        if sleep_for > 0:
+            time.sleep(sleep_for)
+        else:
+            # This tick ran over budget - resync to now instead of trying
+            # to "catch up" with a burst of back-to-back ticks (which would
+            # just turn one slow tick into several fast ones in a row,
+            # reading as its own kind of stutter). Same "a stall costs only
+            # itself" philosophy as DT_MAX_SECONDS above.
+            next_tick = time.monotonic()
 
 
-PALETTE_BUILD_POLL_SECONDS = 0.5  # not animation-critical, unlike the 20Hz loops above
+PALETTE_BUILD_POLL_SECONDS = 0.5  # not animation-critical, unlike the render loop above
 
 
 async def palette_build_loop():
     """Process contribute.html palette-build requests one at a time.
 
     The actual work (decode photo, extract colours, maybe call Colormind)
-    runs via asyncio.to_thread so it can't stall sensor_loop/led_loop or
-    any connected browser's send_loop - see palette_jobs.py's own
-    docstring for why that matters. PALETTES is mutated in place, not
-    reassigned, since led_loop holds the same dict via its own `from
-    ...colour_palette import PALETTES` - reassigning here would silently
-    stop led_loop from ever seeing new palettes.
-    """
+    runs via asyncio.to_thread so it can't stall this event loop's other
+    job (the websocket server, which shares this loop - see
+    _run_background_asyncio) - see palette_jobs.py's own docstring for why
+    that matters. PALETTES is mutated in place, not reassigned, since
+    render_loop holds the same dict via its own `from ...colour_palette
+    import PALETTES` - reassigning here would silently stop render_loop
+    from ever seeing new palettes."""
     while True:
         request = server.palette_job_request
         if request is not None:
@@ -722,13 +593,32 @@ async def palette_build_loop():
         await asyncio.sleep(PALETTE_BUILD_POLL_SECONDS)
 
 
-async def main():
+async def _background_asyncio_main(host: str, port: int) -> None:
+    """The websocket server and the palette-build queue, gathered on ONE
+    event loop - deliberately kept together (not split onto separate
+    threads) because server.py's build_palette control action checks
+    latest["palette_job"]["status"] before deciding to enqueue a new job,
+    and that check-then-act is only race-free as long as nothing else can
+    interleave between it and palette_build_loop's own writes to the same
+    key - true as long as both stay coroutines on the same loop, same as
+    today."""
+    await asyncio.gather(
+        server.start_server(host=host, port=port),
+        palette_build_loop(),
+    )
+
+
+def _run_background_asyncio(host: str, port: int) -> None:
+    asyncio.run(_background_asyncio_main(host, port))
+
+
+def main():
     config = load_config()
     sensors = build_sensors(config)
     # heart_rate and accelerometer are two independent APA102 chains (not
     # data-connected to each other) - one LEDStrip per entry in leds.strips,
     # each opening its own SPI bus/device. See _led_zone_pixel_ranges/
-    # output_loop for how each led zone's frame is routed to the right one.
+    # render_loop for how each led zone's frame is routed to the right one.
     strips = {
         name: LEDStrip(
             num_pixels=cfg["num_pixels"],
@@ -756,7 +646,7 @@ async def main():
         # so the browser can build one card per zone, slice led_frame into
         # per-zone swatches, and show a live readout of what's driving each
         # zone, without duplicating the pixel-range/source-resolution logic
-        # output_loop already does. "dmx" zones are kept in a separate list
+        # render_loop already does. "dmx" zones are kept in a separate list
         # below (dmx_zones) rather than mixed into this one: admin.js's
         # swatch slicing here walks led_frame by zone.pixels in order, and a
         # dmx zone has no slot in led_frame at all - mixing it in would
@@ -766,7 +656,7 @@ async def main():
             for z in config["leds"]["zones"] if z["output"]["type"] == "led"
         ],
         # Same shape, for "dmx" zones - admin.js paints these from
-        # server.latest["dmx_frame"][name] instead (see output_loop),
+        # server.latest["dmx_frame"][name] instead (see render_loop),
         # live-swappable effect/palette same as led zones (set_zone_effect
         # is zone-name-generic server-side - see server.py's ADMIN_ACTIONS).
         "dmx_zones": [
@@ -785,6 +675,19 @@ async def main():
     # named palettes the Python effects use - one source of truth, not a
     # second hand-typed copy of the colours living in JS.
     server.latest["palette_data"] = dict(PALETTES)
+    # Pre-seeded here (not left for render_loop's first tick to create, the
+    # way they used to be) - render_loop now runs on a different OS thread
+    # than the websocket server's send_loop, which does `{**latest, ...}`
+    # every tick. Inserting a brand-new key into a dict while another
+    # thread is mid-copy of that same dict is a genuine CPython hazard
+    # (RuntimeError: dictionary changed size during iteration); pre-seeding
+    # means every write render_loop ever does to these three keys is a
+    # plain re-assignment to an existing key instead, which is safe under
+    # the GIL with no lock needed - same reasoning already relied on for
+    # every other server.latest key.
+    server.latest["sensors"] = {}
+    server.latest["led_frame"] = []
+    server.latest["dmx_frame"] = {}
 
     server.admin_passcode = config["admin"]["passcode"]
     # Seeded from each zone's own default effect+palette - live-swappable
@@ -816,32 +719,44 @@ async def main():
     except OSError as exc:
         print(f"[main] couldn't generate QR codes (no network route?): {exc}")
 
-    tasks = [
-        sensor_loop(sensors, infer, activation_tracker, hr_tracker, motion_tracker, audio_moment_tracker),
-        output_loop(strips, dmx, config["leds"]["zones"], config["leds"]["brightness"]),
-        palette_build_loop(),
-        server.start_server(host=config["server"]["host"], port=config["server"]["port"]),
-    ]
+    # Everything above this line only ever touches server.latest/
+    # runtime_settings/admin_passcode from this one thread (main(), before
+    # anything else starts) - so this is the one point where seeding order
+    # actually matters. Both of the following start real background
+    # threads; nothing before this point may run again once they're live.
+    producers.start_producers(sensors, producers.raw)
+    threading.Thread(
+        target=_run_background_asyncio,
+        args=(config["server"]["host"], config["server"]["port"]),
+        daemon=True,
+        name="asyncio-services",
+    ).start()
+
+    # One persistent worker, reused every tick - see render_loop's own
+    # comment on why this replaced a fresh executor submission each time.
+    dmx_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="dmx-write")
 
     try:
-        # Run all tasks concurrently. gather() waits for all to finish
-        # (they won't — they're infinite loops).
-        await asyncio.gather(*tasks)
+        # render_loop runs forever on this thread (the process's main
+        # thread) until Ctrl+C raises KeyboardInterrupt here.
+        render_loop(sensors, infer, activation_tracker, hr_tracker, motion_tracker, audio_moment_tracker,
+                    strips, dmx, config["leds"]["zones"], dmx_executor, config["leds"]["brightness"])
     finally:
-        # Ctrl+C cancels this coroutine at whatever await it's sitting on -
-        # that raises right here, past the gather, so this always runs
-        # before the process actually exits. Without it a strip just holds
-        # whatever colour it last received (APA102 chips have no "power
-        # off" tied to the SPI line going quiet) - every chain gets blanked,
-        # not just one.
+        # Ctrl+C interrupts render_loop at whatever it's doing (almost
+        # always its own time.sleep) - that raises right here, so this
+        # always runs before the process actually exits. Without it a
+        # strip just holds whatever colour it last received (APA102 chips
+        # have no "power off" tied to the SPI line going quiet) - every
+        # chain gets blanked, not just one.
         for strip in strips.values():
             strip.render_pixels([[0, 0, 0]] * strip.num_pixels)
         if dmx is not None:
             dmx.blackout()
- 
- 
+        dmx_executor.shutdown(wait=True)
+
+
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        main()
     except KeyboardInterrupt:
         print("\nStopped.")
