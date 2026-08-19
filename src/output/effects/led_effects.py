@@ -540,6 +540,7 @@ class ShakeFireworkEffect:
     def _fire(self, intensity: float):
         """Spawn a beam on every arm segment at once - see class
         docstring's INSTANT TRIGGER / BEAM RENDERING sections."""
+        print(f"[ShakeFireworkEffect] FIRING intensity={intensity:.3f}")  # TEMP DEBUG - remove once confirmed working
         for k in range(self.ARM_COUNT):
             _, length = self.arm_ranges[k]
             if length == 0:
@@ -553,6 +554,8 @@ class ShakeFireworkEffect:
 
     def step(self, intensity: float = 0.0, dt: float = ASSUMED_TICK_SECONDS):
         intensity = min(max(intensity, 0.0), 1.0)
+        if intensity > 0.05:  # TEMP DEBUG - remove once confirmed working
+            print(f"[ShakeFireworkEffect] step intensity={intensity:.3f} cooldown={self._cooldown_remaining:.3f} beams={len(self._beams)}")
 
         # Cooldown is a real countdown in seconds - dt substitutes directly
         # for the old fixed-TICK_SECONDS assumption, no ratio/exponent
