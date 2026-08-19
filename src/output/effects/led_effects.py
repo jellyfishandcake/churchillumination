@@ -910,22 +910,41 @@ class TempHumidityBarEffect:
         noise = value_noise(x * x_scale, np.full(self.n, self.t * t_scale), seed=seed)
         return np.clip(noise, 0.0, None) ** power
 
+    # How much of _vivid_boost's brightness multiplier survives alongside
+    # the hue blend - real-hardware feedback 2026-08-19: with this at 1.0
+    # (brightness scaling exactly as strong as the colour blend), shimmer
+    # on fog/snow's already-bright, near-zero-saturation base read as
+    # "just white light", hue barely perceptible ("brightness or
+    # saturation aren't that visible, hue change is much better"). Fog is
+    # literally R=G=B=200 - any extra brightness on top of that pushes
+    # straight toward clipped white with nothing to counteract it, drowning
+    # out a hue shift that (per that same feedback) reads fine on its own.
+    # Cutting brightness's contribution down hard lets the hue blend below
+    # carry the effect instead of competing with it. Untuned placeholder
+    # like everything else here - raise if the shimmer ends up reading as
+    # too flat/dim without any brightness pop at all.
+    VIVID_BRIGHTNESS_RATIO = 0.15
+
     def _vivid_boost(self, frame: np.ndarray, sparkle: np.ndarray, max_boost: float) -> np.ndarray:
         """Shared by both layer 2 (contrast shimmer) and layer 3 (touch
-        burst) - boosts brightness AND blends toward a colour sampled from
-        this zone's own palette (self.lut - previously totally unused by
-        this effect, see __init__'s own comment), not brightness alone.
+        burst) - blends toward a colour sampled from this zone's own
+        palette (self.lut - previously totally unused by this effect, see
+        __init__'s own comment) as the main effect, with a much smaller
+        brightness lift riding along (see VIVID_BRIGHTNESS_RATIO above).
 
         First version (2026-08-19) pushed each pixel away from its own
         luma instead - fixed the original pure-brightness sparkle reading
         as "turning white" on cloudy's desaturated base colour, but per
-        explicit "take colours from palette" follow-up feedback, this
-        replaces that with blending toward an actual palette colour
-        instead: a genuinely different hue reads as a distinct glint
-        regardless of the base's own saturation, and it means the shimmer
-        visibly carries whatever palette this zone is assigned (autumn,
-        winter, ...) rather than always being "a richer version of
-        whatever CONDITION_COLOURS already picked".
+        "take colours from palette" follow-up feedback, this replaced that
+        with blending toward an actual palette colour instead: a
+        genuinely different hue reads as a distinct glint regardless of
+        the base's own saturation, and it means the shimmer visibly
+        carries whatever palette this zone is assigned (autumn, winter,
+        ...) rather than always being "a richer version of whatever
+        CONDITION_COLOURS already picked". A same-day brightness-ratio cut
+        (see VIVID_BRIGHTNESS_RATIO) followed once real-hardware testing
+        showed the brightness term was still dominating perception over
+        the hue one, particularly on fog/snow.
 
         Which palette colour: driven by the sparkle noise field itself
         (already computed per caller, normalised against its own peak
@@ -941,7 +960,7 @@ class TempHumidityBarEffect:
         norm = sparkle / max(float(sparkle.max()), 1e-6)  # 0..1 relative to this tick's own peak sparkle
         accent = self.lut[(norm * (len(self.lut) - 1)).astype(int)].astype(float)
         vivid = frame + (accent - frame) * np.clip(strength, 0.0, 1.0)
-        return vivid * (1.0 + strength)
+        return vivid * (1.0 + strength * self.VIVID_BRIGHTNESS_RATIO)
 
     def _shimmer_boost(self, frame: np.ndarray, contrast: float) -> np.ndarray:
         sparkle = self._sparkle(seed=11, x_scale=1.4, t_scale=2.2) * contrast
